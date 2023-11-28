@@ -15,7 +15,7 @@ bl_info = {
     "name": "Import Autodesk MAX (.max)",
     "author": "Sebastian Sille, Philippe Lagadec, Jens M. Plonka",
     "version": (1, 1, 2),
-    "blender": (4, 0, 0),
+    "blender": (3, 6, 0),
     "location": "File > Import",
     "description": "Import 3DSMAX meshes & materials",
     "warning": "",
