@@ -223,7 +223,8 @@ SKIPPABLE = {
 
 
 def get_valid_name(name):
-    if (INVALID_NAME.match(name)): return "_%s"%(name.encode('utf8'))
+    if (INVALID_NAME.match(name)):
+	    return "_%s"%(name.encode('utf8'))
     return "%s"%(name.encode('utf8'))
 
 def i8(data):
@@ -774,8 +775,8 @@ class MaxChunk():
 
     def __str__(self):
         if (self.unknown == True):
-            return "%s[%4x] %04X: %s" %("" * self.level, self.number, self.types, ":".join("%02x"%(c) for c in self.data))
-        return "%s[%4x] %04X: %s=%s" %("" * self.level, self.number, self.types, self.format, self.data)
+            return "%s[%4x] %04X: %s" %(""*self.level, self.number, self.types, ":".join("%02x"%(c) for c in self.data))
+        return "%s[%4x] %04X: %s=%s" %(""*self.level, self.number, self.types, self.format, self.data)
 
 
 class ByteArrayChunk(MaxChunk):
@@ -840,7 +841,7 @@ class ClassIDChunk(ByteArrayChunk):
             self.set(data, "struct", '<IQI', 0, 16)  # DllIndex, ID, SuperID
         else:
             self.unknown = False
-            self.data =  ":".join("%02x"%(c) for c in data)
+            self.data = ":".join("%02x"%(c) for c in data)
 
 
 class DirectoryChunk(ByteArrayChunk):
@@ -863,8 +864,8 @@ class ContainerChunk(MaxChunk):
 
     def __str__(self):
         if (self.unknown == True):
-            return "%s[%4x] %04X" %("" * self.level, self.number, self.types)
-        return "%s[%4x] %04X: %s" %("" * self.level, self.number, self.types, self.format)
+            return "%s[%4x] %04X" %(""*self.level, self.number, self.types)
+        return "%s[%4x] %04X: %s" %(""*self.level, self.number, self.types, self.format)
 
     def get_first(self, types):
         for child in self.children:
@@ -888,8 +889,8 @@ class SceneChunk(ContainerChunk):
 
     def __str__(self):
         if (self.unknown == True):
-            return "%s[%4x] %s" %("" * self.level, self.number, get_class_name(self))
-        return "%s[%4x] %s: %s" %("" * self.level, self.number, get_class_name(self), self.format)
+            return "%s[%4x] %s" %(""*self.level, self.number, get_class_name(self))
+        return "%s[%4x] %s: %s" %(""*self.level, self.number, get_class_name(self), self.format)
 
     def set_data(self, data):
         previous = None
@@ -1047,7 +1048,6 @@ def get_reference(chunk):
     references = {}
     refs = chunk.get_first(0x2035)
     if (refs):
-        types = refs.data[0]
         offset = 1
         while offset < len(refs.data):
             key = refs.data[offset]
@@ -1465,7 +1465,6 @@ def get_poly_data(chunk):
 
 def create_editable_poly(context, node, msh, mat, mtx, umt, uvm):
     coords = point4i = point6i = pointNi = None
-    name = node.get_first(TYP_NAME).data
     poly = msh.get_first(0x08FE)
     created = False
     lidx = []
@@ -1507,7 +1506,6 @@ def create_editable_poly(context, node, msh, mat, mtx, umt, uvm):
 
 
 def create_editable_mesh(context, node, msh, mat, mtx, umt):
-    name = node.get_first(TYP_NAME).data
     poly = msh.get_first(0x08FE)
     created = False
     if (poly):
@@ -1519,11 +1517,13 @@ def create_editable_mesh(context, node, msh, mat, mtx, umt):
     return created
 
 
-def create_shell(context, node, shell, mat, mtx, umt):
-    name = node.get_first(TYP_NAME).data
+def create_shell(context, node, shell, mat, mtx, umt, uvm):
     refs = get_references(shell)
     msh = refs[-1]
-    created = create_editable_mesh(context, node, msh, mat, mtx, umt)
+    if (get_class_name(msh) == "'Editable Poly'"):
+        created = create_editable_poly(context, node, msh, mat, mtx, umt, uvm)
+    else:
+        created = create_editable_mesh(context, node, msh, mat, mtx, umt)
     return created
 
 
@@ -1542,7 +1542,7 @@ def create_mesh(context, node, msh, mtx, mat, umt, uvm):
     elif (uid == 0x192F60981BF8338D):
         created = create_editable_poly(context, node, msh, mat, mtx, umt, uvm)
     elif (uid in {0x2032, 0x2033}):
-        created = create_shell(context, node, msh, mat, mtx, umt)
+        created = create_shell(context, node, msh, mat, mtx, umt, uvm)
     else:
         skip = SKIPPABLE.get(uid)
         if (skip is not None):
