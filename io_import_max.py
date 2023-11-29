@@ -35,6 +35,7 @@ import math, mathutils
 import bpy, bpy_extras
 from bpy_extras.io_utils import axis_conversion
 from bpy_extras.io_utils import orientation_helper
+from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
 
@@ -1150,7 +1151,7 @@ def get_rotation(pos):
         elif (uid == 0x442313):  # TCB Rotation
             rot = pos.get_first(0x2504).data
             rotation = mathutils.Quaternion((rot[0], rot[1], rot[2], rot[3]))
-        elif (uid == 0x4B4B1003):  #'Rotation List
+        elif (uid == 0x4B4B1003):  # Rotation List
             refs = get_references(pos)
             if (len(refs) > 3):
                 return get_rotation(refs[0])
@@ -1244,7 +1245,7 @@ def get_color(colors, idx):
 def get_value(colors, idx):
     prop = get_property(colors, idx)
     if (prop is not None):
-        siz = 15 if (len(prop.data) > 19) else 6
+        siz = 15 if (len(prop.data) > 15) else 11
         val, offset = get_float(prop.data, siz)
         return val
     return None
@@ -1262,8 +1263,8 @@ def get_standard_material(refs):
             material.set('specular', get_color(parameters, 0x02))
             material.set('emissive', get_color(parameters, 0x08))
             material.set('shinines', get_value(parameters, 0x0A))
-            transparency = refs[4]  # ParameterBlock2
-            material.set('transparency', get_value(transparency, 0x02))
+            reflect = refs[4]  # ParameterBlock2
+            material.set('reflect', get_value(reflect, 0x02))
     except:
         pass
     return material
@@ -1274,9 +1275,6 @@ def get_vray_material(vry):
     try:
         material.set('diffuse', get_color(vry, 0x01))
         material.set('specular', get_color(vry, 0x02))
-        material.set('reflect', get_value(vry, 0x04))
-        material.set('shinines', get_value(vry, 0x0A))
-        material.set('transparency', get_value(vry, 0x02))
     except:
         pass
     return material
@@ -1287,9 +1285,6 @@ def get_arch_material(ad):
     try:
         material.set('diffuse', get_color(ad, 0x1A))
         material.set('specular', get_color(ad, 0x02))
-        material.set('reflect', get_color(ad, 0x05))
-        material.set('shinines', get_value(ad, 0x0B))
-        material.set('transparency', get_value(ad, 0x02))
     except:
         pass
     return material
@@ -1314,9 +1309,12 @@ def adjust_material(obj, mat):
         if (obj is not None) and (material is not None):
             objMaterial = bpy.data.materials.new(get_class_name(mat))
             obj.data.materials.append(objMaterial)
-            objMaterial.diffuse_color[:3] = material.get('diffuse', (0.8,0.8,0.8))
-            objMaterial.specular_color[:3] = material.get('specular', (1.0,1.0,1.0))
-            objMaterial.roughness = 1.0 - material.get('shinines', 0.6)
+            matShader = PrincipledBSDFWrapper(objMaterial, is_readonly=False, use_nodes=True)
+            matShader.base_color = objMaterial.diffuse_color[:3] = material.get('diffuse', (0.8,0.8,0.8))
+            matShader.specular_tint = objMaterial.specular_color[:3] = material.get('specular', (1.0,1.0,1.0))
+            matShader.specular = objMaterial.specular_intensity = material.get('reflect', 0.5)
+            matShader.roughness = objMaterial.roughness = 1.0 - material.get('shinines', 0.6)
+            matShader.emission_color = material.get('emissive', (0,0,0))
 
 
 def adjust_matrix(obj, node):
