@@ -554,7 +554,7 @@ class MaxChunk():
         self.level = level
         self.parent = None
         self.previous = None
-        self.next = None
+        self.following = None
         self.size = size
         self.data = None
 
@@ -643,7 +643,7 @@ class ContainerChunk(MaxChunk):
 
     def set_data(self, data):
         previous = None
-        next = None
+        following = None
         reader = ChunkReader()
         self.children = reader.get_chunks(data, self.level + 1, ContainerChunk, self.primReader)
 
@@ -661,7 +661,7 @@ class SceneChunk(ContainerChunk):
 
     def set_data(self, data):
         previous = None
-        next = None
+        following = None
         # print('Scene', "%s\n" %(self))
         reader = ChunkReader()
         self.children = reader.get_chunks(data, self.level + 1,
@@ -923,7 +923,7 @@ def get_rotation(pos):
         uid = get_guid(pos)
         if (uid == 0x2012):  # Euler XYZ
             rot = get_point_3d(pos)
-            rotation = mathutils.Euler((rot[2], rot[1], rot[0])).to_quaternion()
+            rotation = mathutils.Euler((rot[0], rot[1], rot[2])).to_quaternion()
         elif (uid == 0x442313):  # TCB Rotation
             rot = pos.get_first(0x2504).data
             rotation = mathutils.Quaternion((rot[0], rot[1], rot[2], rot[3]))
