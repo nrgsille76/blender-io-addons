@@ -1244,7 +1244,7 @@ def adjust_matrix(obj, node):
     return plc
 
 
-def create_shape(context, pts, indices, node, key, mtx, mat, umt):
+def create_shape(context, node, key, pts, indices, uvdata, mat, obtypes):
     name = node.get_first(TYP_NAME).data
     shape = bpy.data.meshes.new(name)
     if (key is not None):
@@ -1267,17 +1267,22 @@ def create_shape(context, pts, indices, node, key, mtx, mat, umt):
             loop += len(vtx)
         shape.polygons.foreach_set("loop_start", loopstart)
         shape.loops.foreach_set("vertex_index", data)
-
-    if (len(data) > 0):
-        shape.validate()
-        shape.update()
-        obj = bpy.data.objects.new(name, shape)
-        context.view_layer.active_layer_collection.collection.objects.link(obj)
-        obj.matrix_world = mtx
-        if (umt):
-            adjust_material(obj, mat)
-        return True
-    return True
+    if ('UV' in obtypes and uvdata is not None):
+        maps, crds, uvws = uvdata
+        for uvm in range(len(maps)):
+            coords = [co for i, co in enumerate(crds) if i % 3 in (0, 1)]
+            uvcord = list(zip(coords[0::2], coords[1::2]))
+            shape.uv_layers.new(do_init=False)
+            uvloops = tuple(uv for uvw in uvws for uvid in uvw for uv in uvcord[uvid])
+            shape.uv_layers.active.data.foreach_set("uv", uvloops)
+    shape.validate()
+    shape.update()
+    obj = bpy.data.objects.new(name, shape)
+    context.view_layer.active_layer_collection.collection.objects.link(obj)
+    if ('MATERIAL' in obtypes):
+        adjust_material(obj, mat)
+    object_list.append(obj)
+    return object_list
 
 
 def create_dummy_object(context, node, uid):
