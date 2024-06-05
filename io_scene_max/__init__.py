@@ -10,6 +10,7 @@ from bpy_extras.io_utils import (
 )
 from bpy.props import (
     BoolProperty,
+    EnumProperty,
     FloatProperty,
     StringProperty,
     CollectionProperty,
