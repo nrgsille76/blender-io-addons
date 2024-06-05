@@ -540,6 +540,9 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             elif temp_chunk.ID == MAT_BUMP_PERCENT:
                 contextWrapper.normalmap_strength = (float(read_short(temp_chunk) / 100))
 
+            elif mapto in {'COLOR', 'SPECULARITY'} and temp_chunk.ID == MAT_MAP_TEXBLUR:
+                contextWrapper.node_principled_bsdf.inputs['Sheen'].default_value = float(read_float(temp_chunk))
+
             elif temp_chunk.ID == MAT_MAP_TILING:
                 """Control bit flags, 0x1 activates decaling, 0x2 activates mirror, 0x8 activates inversion,
                 0x10 deactivates tiling, 0x20 activates summed area sampling, 0x40 activates alpha source,
