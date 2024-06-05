@@ -1,31 +1,17 @@
-# SPDX-FileCopyrightText: 2023 Sebastian Schrand
+# SPDX-FileCopyrightText: 2023-2024 Sebastian Schrand
+#                         2017-2022 Jens M. Plonka
+#                         2005-2018 Philippe Lagadec
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Import is based on using information from olefile IO sourcecode
-# and the FreeCAD Autodesk 3DS Max importer ImportMAX
+
+# Import is based on using information from `olefile` IO source-code
+# and the FreeCAD Autodesk 3DS Max importer ImportMAX.
 #
-# olefile (formerly OleFileIO_PL) is copyright (c) 2005-2018 Philippe Lagadec
+# `olefile` (formerly OleFileIO_PL) is copyright Philippe Lagadec.
 # (https://www.decalage.info)
 #
-# ImportMAX is copyright (c) 2017-2022 Jens M. Plonka
+# ImportMAX is copyright Jens M. Plonka.
 # (https://www.github.com/jmplonka/Importer3D)
-
-
-bl_info = {
-    "name": "Import Autodesk MAX (.max)",
-    "author": "Sebastian Sille, Philippe Lagadec, Jens M. Plonka",
-    "version": (1, 1, 6),
-    "blender": (3, 6, 0),
-    "location": "File > Import",
-    "description": "Import 3DSMAX meshes & materials",
-    "warning": "",
-    "filepath_url": "",
-    "category": "Import-Export"}
-
-
-##################
-# IMPORT MODULES #
-##################
 
 import io
 import os
@@ -51,10 +37,24 @@ from bpy.props import (
 )
 from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 
+
 if "bpy" in locals():
     import importlib
     if "import_max" in locals():
         importlib.reload(import_max)
+
+
+bl_info = {
+    "name": "Import Autodesk MAX (.max)",
+    "author": "Sebastian Sille, Philippe Lagadec, Jens M. Plonka",
+    "version": (1, 1, 8),
+    "blender": (3, 6, 0),
+    "location": "File > Import",
+    "description": "Import 3DSMAX meshes & materials",
+    "warning": "",
+    "filepath_url": "",
+    "category": "Import-Export",
+    }
 
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
@@ -98,12 +98,11 @@ class Import_max(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        from . import import_max
         keywords = self.as_keywords(ignore=("axis_forward", "axis_up", "filter_glob"))
         global_matrix = axis_conversion(from_forward=self.axis_forward, from_up=self.axis_up,).to_4x4()
         keywords["global_matrix"] = global_matrix
 
-        return import_max.load(self, context, **keywords)
+        return load(self, context, **keywords)
 
     def draw(self, context):
         pass
@@ -1284,7 +1283,7 @@ def adjust_material(obj, mat):
             obj.data.materials.append(objMaterial)
             matShader = PrincipledBSDFWrapper(objMaterial, is_readonly=False, use_nodes=True)
             objMaterial.specular_color[:3] = material.get('specular', (1, 1, 1))
-	    matShader.base_color = objMaterial.diffuse_color[:3] = material.get('diffuse', (0.8, 0.8, 0.8))
+            matShader.base_color = objMaterial.diffuse_color[:3] = material.get('diffuse', (0.8, 0.8, 0.8))
             matShader.specular = objMaterial.specular_intensity = material.get('glossines', 0.5)
             matShader.roughness = objMaterial.roughness = 1.0 - material.get('shinines', 0.6)
             matShader.metallic = objMaterial.metallic = material.get('metallic', 0)
@@ -1572,7 +1571,6 @@ def create_object(context, node, obtypes):
             obj.data.transform(p_mtx)
     matrix_dict[nodename] = create_matrix(prs)
     parent_dict[nodename] = parentname
-
     return nodename, created
 
 
