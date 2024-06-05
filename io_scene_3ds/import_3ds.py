@@ -10,9 +10,9 @@ import struct
 import mathutils
 from bpy_extras.image_utils import load_image
 from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
+from pathlib import Path
 
 BOUNDS_3DS = []
-
 
 ###################
 # Data Structures #
@@ -48,8 +48,11 @@ AMBIENTLIGHT = 0x2100  # The color of the ambient light
 FOG = 0x2200  # The fog atmosphere settings
 USE_FOG = 0x2201  # The fog atmosphere flag
 FOG_BGND = 0x2210  # The fog atmosphere background flag
+DISTANCE_CUE = 0x2300  # The distance cue atmosphere settings
+USE_DISTANCE_CUE = 0x2301  # The distance cue atmosphere flag
 LAYER_FOG = 0x2302  # The fog layer atmosphere settings
 USE_LAYER_FOG = 0x2303  # The fog layer atmosphere flag
+DCUE_BGND = 0x2310  # The distance cue background flag
 MATERIAL = 0xAFFF  # This stored the texture info
 OBJECT = 0x4000  # This stores the faces, vertices, etc...
 
@@ -175,7 +178,6 @@ FALLOFF_TRACK_TAG = 0xB028  # Keyframe spotlight falloff track
 HIDE_TRACK_TAG = 0xB029  # Keyframe object hide track
 OBJECT_NODE_ID = 0xB030  # Keyframe object node id
 PARENT_NAME = 0x80F0  # Object parent name tree (dot seperated)
-
 ROOT_OBJECT = 0xFFFF
 
 global scn
@@ -183,7 +185,7 @@ scn = None
 
 object_dictionary = {}
 parent_dictionary = {}
-object_matrix = {}
+matrix_dictionary = {}
 
 
 class Chunk:
@@ -260,13 +262,14 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
             tint1[:3] + [1] if tint1 else shader.inputs['Base Color'].default_value[:])
         contextWrapper._grid_to_location(1, 2, dst_node=mixer, ref_node=shader)
         img_wrap = contextWrapper.base_color_texture
-        links.new(mixer.outputs['Color'], shader.inputs['Base Color'])
+        image.alpha_mode = 'CHANNEL_PACKED'
+        links.new(mixer.outputs[0], shader.inputs['Base Color'])
         if tint2 is not None:
             img_wrap.colorspace_name = 'Non-Color'
             mixer.inputs[2].default_value = tint2[:3] + [1]
-            links.new(img_wrap.node_image.outputs['Color'], mixer.inputs[0])
+            links.new(img_wrap.node_image.outputs[0], mixer.inputs[0])
         else:
-            links.new(img_wrap.node_image.outputs['Color'], mixer.inputs[2])
+            links.new(img_wrap.node_image.outputs[0], mixer.inputs[2])
     elif mapto == 'ROUGHNESS':
         img_wrap = contextWrapper.roughness_texture
     elif mapto == 'METALLIC':
@@ -283,7 +286,7 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
         shader.location = (-300,0)
         img_wrap = contextWrapper.alpha_texture
         img_wrap.use_alpha = False
-        links.new(img_wrap.node_image.outputs['Color'], img_wrap.socket_dst)
+        links.new(img_wrap.node_image.outputs[0], img_wrap.socket_dst)
     elif mapto == 'EMISSION':
         shader.location = (0,-900)
         img_wrap = contextWrapper.emission_color_texture
@@ -298,11 +301,11 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
             if node.label == 'Mixer':
                 spare = node.inputs[1] if node.inputs[1].is_linked is False else node.inputs[2]
                 socket = spare if spare.is_linked is False else node.inputs[0]
-                links.new(img_wrap.outputs['Color'], socket)
+                links.new(img_wrap.outputs[0], socket)
             if node.type == 'TEX_COORD':
-                links.new(node.outputs['UV'], img_wrap.inputs['Vector'])
+                links.new(node.outputs['UV'], img_wrap.inputs[0])
         if shader.inputs['Base Color'].is_linked is False:
-            links.new(img_wrap.outputs['Color'], shader.inputs['Base Color'])
+            links.new(img_wrap.outputs[0], shader.inputs['Base Color'])
 
     img_wrap.image = image
     img_wrap.extension = 'REPEAT'
@@ -322,13 +325,13 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
     if alpha == 'alpha':
         own_node = img_wrap.node_image
         contextWrapper.material.blend_method = 'HASHED'
-        links.new(own_node.outputs['Alpha'], img_wrap.socket_dst)
+        links.new(own_node.outputs[1], img_wrap.socket_dst)
         for link in links:
             if link.from_node.type == 'TEX_IMAGE' and link.to_node.type == 'MIX_RGB':
                 tex = link.from_node.image.name
                 own_map = img_wrap.node_mapping
                 if tex == image.name:
-                    links.new(link.from_node.outputs['Alpha'], img_wrap.socket_dst)
+                    links.new(link.from_node.outputs[1], img_wrap.socket_dst)
                     try:
                         nodes.remove(own_map)
                         nodes.remove(own_node)
@@ -351,7 +354,7 @@ childs_list = []
 parent_list = []
 
 def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAIN, FILTER,
-                       IMAGE_SEARCH, WORLD_MATRIX, KEYFRAME, CONVERSE, MEASURE, CURSOR):
+                       IMAGE_SEARCH, KEYFRAME, APPLY_MATRIX, CONVERSE, MEASURE, CURSOR):
 
     contextObName = None
     contextWorld = None
@@ -361,7 +364,6 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
     contextAlpha = None
     contextColor = None
     contextWrapper = None
-    contextMatrix = None
     contextReflection = None
     contextTransmission = None
     contextMesh_vertls = None
@@ -392,15 +394,13 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
     trackposition = {}  # keep track to position for target calculation
 
     def putContextMesh(context, ContextMesh_vertls, ContextMesh_facels, ContextMesh_flag,
-                       ContextMeshMaterials, ContextMesh_smooth, WORLD_MATRIX):
+                       ContextMeshMaterials, ContextMesh_smooth):
 
         bmesh = bpy.data.meshes.new(contextObName)
-
         if ContextMesh_facels is None:
             ContextMesh_facels = []
 
         if ContextMesh_vertls:
-
             bmesh.vertices.add(len(ContextMesh_vertls) // 3)
             bmesh.vertices.foreach_set("co", ContextMesh_vertls)
 
@@ -477,20 +477,9 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         if ContextMesh_smooth:
             for f, pl in enumerate(bmesh.polygons):
                 smoothface = ContextMesh_smooth[f]
-                if smoothface > 0:
-                    bmesh.polygons[f].use_smooth = True
-                else:
-                    bmesh.polygons[f].use_smooth = False
+                bmesh.polygons[f].use_smooth = True if smoothface > 0 else False
         else:
-            for poly in bmesh.polygons:
-                poly.use_smooth = False
-
-        if contextMatrix:
-            if WORLD_MATRIX:
-                ob.matrix_world = contextMatrix
-            else:
-                ob.matrix_local = contextMatrix
-            object_matrix[ob] = contextMatrix.copy()
+            bmesh.polygons.foreach_set("use_smooth", [False] * len(bmesh.polygons))
 
     # a spare chunk
     new_chunk = Chunk()
@@ -499,7 +488,6 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
     CreateBlenderObject = False
     CreateCameraObject = False
     CreateLightObject = False
-    CreateTrackData = False
 
     CreateWorld = 'WORLD' in FILTER
     CreateMesh = 'MESH' in FILTER
@@ -567,12 +555,11 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 contextWrapper.node_principled_bsdf.inputs['Sheen Weight'].default_value = float(read_float(temp_chunk))
 
             elif temp_chunk.ID == MAT_MAP_TILING:
-                """Control bit flags, where 0x1 activates decaling, 0x2 activates mirror,
-                0x8 activates inversion, 0x10 deactivates tiling, 0x20 activates summed area sampling,
-                0x40 activates alpha source, 0x80 activates tinting, 0x100 ignores alpha, 0x200 activates RGB tint.
-                Bits 0x80, 0x100, and 0x200 are only used with TEXMAP, TEX2MAP, and SPECMAP chunks.
-                0x40, when used with a TEXMAP, TEX2MAP, or SPECMAP chunk must be accompanied with a tint bit,
-                either 0x100 or 0x200, tintcolor will be processed if colorchunks are present."""
+                """Control bit flags, 0x1 activates decaling, 0x2 activates mirror, 0x8 activates inversion,
+                0x10 deactivates tiling, 0x20 activates summed area sampling, 0x40 activates alpha source,
+                0x80 activates tinting, 0x100 ignores alpha, 0x200 activates RGB tint. Bits 0x80, 0x100, and 0x200
+                are only used with TEXMAP, TEX2MAP, and SPECMAP chunks. 0x40, when used with a TEXMAP, TEX2MAP, or SPECMAP chunk
+                must be accompanied with a tint bit, either 0x100 or 0x200, tintcolor will be processed if colorchunks are present."""
                 tiling = read_short(temp_chunk)
                 if tiling & 0x1:
                     extend = 'decal'
@@ -645,16 +632,19 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         angle = math.radians(90)  # Target triangulation
         check_sign = abs(loca.y) < abs(target.y)
         check_axes = abs(loca.x - target.x) > abs(loca.y - target.y)
+        plane_x = plane.x if check_sign else -1 * plane.x
         plane_y = plane.y if check_sign else -1 * plane.y
-        sign_xy = plane.x if check_axes else plane.y
-        axis_xy = plane_y if check_axes else plane.x
+        sign_xy = plane_x if check_axes else plane.y
+        axis_xy = plane_y if check_axes else plane_x
+        invert = abs(loca.x) < abs(target.x) and not check_sign
         hyp = math.sqrt(pow(plane.x,2) + pow(plane.y,2))
         dia = math.sqrt(pow(hyp,2) + pow(plane.z,2))
         yaw = math.atan2(math.copysign(hyp, sign_xy), axis_xy)
         bow = math.acos(hyp / dia) if dia != 0 else 0
         turn = angle - yaw if check_sign else angle + yaw
         tilt = angle - bow if loca.z > target.z else angle + bow
-        pan = yaw if check_axes else turn
+        inv = yaw if check_axes else turn
+        pan = inv if invert else -1 * inv
         return tilt, pan
 
     def read_track_data(track_chunk):
@@ -668,9 +658,8 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         for i in range(nkeys):
             nframe = read_long(track_chunk)
             nflags = read_short(track_chunk)
-            for f in range(bin(nflags).count('1')):
-                temp_data = file.read(SZ_FLOAT)  # Check for spline terms
-                track_chunk.bytes_read += SZ_FLOAT
+            for f in range(bin(nflags)[-5:].count('1')):
+                read_float(track_chunk)  # Check for spline terms
             trackdata = read_float_array(track_chunk)
             keyframe_data[nframe] = trackdata
         return keyframe_data
@@ -682,9 +671,8 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         for i in range(nkeys):
             nframe = read_long(track_chunk)
             nflags = read_short(track_chunk)
-            for f in range(bin(nflags).count('1')):
-                temp_data = file.read(SZ_FLOAT)  # Check for spline terms
-                track_chunk.bytes_read += SZ_FLOAT
+            for f in range(bin(nflags)[-5:].count('1')):
+                read_float(track_chunk) # Check for spline terms
             angle = read_float(track_chunk)
             keyframe_angle[nframe] = math.radians(angle)
         return keyframe_angle
@@ -708,209 +696,10 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         # The main object info chunk
         elif new_chunk.ID == OBJECTINFO:
             process_next_chunk(context, file, new_chunk, imported_objects, CONSTRAIN, FILTER,
-                               IMAGE_SEARCH, WORLD_MATRIX, KEYFRAME, CONVERSE, MEASURE, CURSOR)
+                               IMAGE_SEARCH, KEYFRAME, APPLY_MATRIX, CONVERSE, MEASURE, CURSOR)
 
             # keep track of how much we read in the main chunk
             new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If cursor location
-        elif CURSOR and new_chunk.ID == O_CONSTS:
-            context.scene.cursor.location = read_float_array(new_chunk)
-
-        # If ambient light chunk
-        elif CreateWorld and new_chunk.ID == AMBIENTLIGHT:
-            path, filename = os.path.split(file.name)
-            realname, ext = os.path.splitext(filename)
-            contextWorld = bpy.data.worlds.new("Ambient: " + realname)
-            context.scene.world = contextWorld
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                contextWorld.color[:] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                contextWorld.color[:] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If background chunk
-        elif CreateWorld and new_chunk.ID == SOLIDBACKGND:
-            backgroundcolor = mathutils.Color((0.1, 0.1, 0.1))
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Background: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            worldnodes = contextWorld.node_tree.nodes
-            backgroundnode = worldnodes['Background']
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                backgroundcolor = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                backgroundcolor = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            backgroundmix = next((wn for wn in worldnodes if wn.type in {'MIX', 'MIX_RGB'}), False)
-            backgroundnode.inputs[0].default_value[:3] = backgroundcolor
-            if backgroundmix:
-                backgroundmix.inputs[2].default_value[:3] = backgroundcolor
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If bitmap chunk
-        elif CreateWorld and new_chunk.ID == BITMAP:
-            bitmap_name, read_str_len = read_string(file)
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Bitmap: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            bitmap_mix = nodes.new(type='ShaderNodeMixRGB')
-            bitmapnode = nodes.new(type='ShaderNodeTexEnvironment')
-            bitmap_mix.label = "Solid Color"
-            bitmapnode.label = "Bitmap: " + bitmap_name
-            bitmap_mix.inputs[2].default_value = nodes['Background'].inputs[0].default_value
-            bitmapnode.image = load_image(bitmap_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
-            bitmap_mix.inputs[0].default_value = 0.5 if bitmapnode.image is not None else 1.0
-            bitmapnode.location = (-600, 360) if bitmapnode.image is not None else (-600, 300)
-            bitmap_mix.location = (-250, 300)
-            gradientnode = next((wn for wn in nodes if wn.type == 'VALTORGB'), False)
-            links.new(bitmap_mix.outputs['Color'], nodes['Background'].inputs[0])
-            links.new(bitmapnode.outputs['Color'], bitmap_mix.inputs[1])
-            if gradientnode:
-                links.new(bitmapnode.outputs['Color'], gradientnode.inputs[0])
-            new_chunk.bytes_read += read_str_len
-
-        # If gradient chunk:
-        elif CreateWorld and new_chunk.ID == VGRADIENT:
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Gradient: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            gradientnode = nodes.new(type='ShaderNodeValToRGB')
-            gradientnode.location = (-600, 100)
-            gradientnode.label = "Gradient"
-            backgroundmix = next((wn for wn in worldnodes if wn.type in {'MIX', 'MIX_RGB'}), False)
-            bitmapnode = next((wn for wn in nodes if wn.type in {'TEX_IMAGE', 'TEX_ENVIRONMENT'}), False)
-            if backgroundmix:
-                links.new(gradientnode.outputs['Color'], backgroundmix.inputs[2])
-            else:
-                links.new(gradientnode.outputs['Color'], nodes['Background'].inputs[0])
-            if bitmapnode:
-                links.new(bitmapnode.outputs['Color'], gradientnode.inputs[0])
-            gradientnode.color_ramp.elements.new(read_float(new_chunk))
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                gradientnode.color_ramp.elements[2].color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                gradientnode.color_ramp.elements[2].color[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                gradientnode.color_ramp.elements[1].color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                gradientnode.color_ramp.elements[1].color[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                gradientnode.color_ramp.elements[0].color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                gradientnode.color_ramp.elements[0].color[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If fog chunk:
-        elif CreateWorld and new_chunk.ID == FOG:
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Fog: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            fognode = nodes.new(type='ShaderNodeVolumeAbsorption')
-            fognode.label = "Fog"
-            fognode.location = (10, 60)
-            volumemix = next((wn for wn in worldnodes if wn.label == 'Volume' and wn.type in {'ADD_SHADER', 'MIX_SHADER'}), False)
-            if volumemix:
-                links.new(fognode.outputs['Volume'], volumemix.inputs[1])
-            else:
-                links.new(fognode.outputs[0], nodes['World Output'].inputs[1])
-            contextWorld.mist_settings.use_mist = True
-            contextWorld.mist_settings.start = read_float(new_chunk)
-            nearfog = read_float(new_chunk) * 0.01
-            contextWorld.mist_settings.depth = read_float(new_chunk)
-            farfog = read_float(new_chunk) * 0.01
-            fognode.inputs[1].default_value = (nearfog + farfog) * 0.5
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                fognode.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                fognode.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-        elif CreateWorld and new_chunk.ID == FOG_BGND:
-            pass
-
-        # If layer fog chunk:
-        elif CreateWorld and new_chunk.ID == LAYER_FOG:
-            """Fog options flags are bit 20 (0x100000) for background fogging,
-               bit 0 (0x1) for bottom falloff, and bit 1 (0x2) for top falloff."""
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("LayerFog: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            mxvolume = nodes.new(type='ShaderNodeMixShader')
-            layerfog = nodes.new(type='ShaderNodeVolumeScatter')
-            layerfog.label = "Layer Fog"
-            mxvolume.label = "Volume"
-            layerfog.location = (10, -60)
-            mxvolume.location = (300, 50)
-            nodes['World Output'].location = (600, 200)
-            links.new(layerfog.outputs['Volume'], mxvolume.inputs[2])
-            links.new(mxvolume.outputs[0], nodes['World Output'].inputs[1])
-            fognode = next((wn for wn in worldnodes if wn.type == 'VOLUME_ABSORPTION'), False)
-            if fognode:
-                links.new(fognode.outputs['Volume'], mxvolume.inputs[1])
-            context.view_layer.use_pass_mist = False
-            contextWorld.mist_settings.use_mist = True
-            contextWorld.mist_settings.start = read_float(new_chunk)
-            contextWorld.mist_settings.height = read_float(new_chunk)
-            layerfog.inputs[1].default_value = read_float(new_chunk)
-            layerfog_flag = read_long(new_chunk)
-            if layerfog_flag == 0:
-                contextWorld.mist_settings.falloff = 'LINEAR'
-            if layerfog_flag & 0x1:
-                contextWorld.mist_settings.falloff = 'QUADRATIC'
-            if layerfog_flag & 0x2:
-                contextWorld.mist_settings.falloff = 'INVERSE_QUADRATIC'
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                layerfog.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                layerfog.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-        elif CreateWorld and new_chunk.ID in {USE_FOG, USE_LAYER_FOG}:
-            context.view_layer.use_pass_mist = True
 
         # If material chunk
         elif new_chunk.ID == MATERIAL:
@@ -1085,11 +874,283 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif new_chunk.ID == MAT_TEX2_MAP:
             read_texture(new_chunk, temp_chunk, "Tex", 'TEXTURE')
 
+        # If cursor location
+        elif CURSOR and new_chunk.ID == O_CONSTS:
+            context.scene.cursor.location = read_float_array(new_chunk)
+
+        # If ambient light chunk
+        elif CreateWorld and new_chunk.ID == AMBIENTLIGHT:
+            path, filename = os.path.split(file.name)
+            realname, ext = os.path.splitext(filename)
+            contextWorld = bpy.data.worlds.new("Ambient: " + realname)
+            context.scene.world = contextWorld
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                contextWorld.color[:] = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                contextWorld.color[:] = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            new_chunk.bytes_read += temp_chunk.bytes_read
+
+        # If background chunk
+        elif CreateWorld and new_chunk.ID == SOLIDBACKGND:
+            backgroundcolor = mathutils.Color((0.1, 0.1, 0.1))
+            if contextWorld is None:
+                path, filename = os.path.split(file.name)
+                realname, ext = os.path.splitext(filename)
+                contextWorld = bpy.data.worlds.new("Background: " + realname)
+                context.scene.world = contextWorld
+            contextWorld.use_nodes = True
+            worldnodes = contextWorld.node_tree.nodes
+            backgroundnode = worldnodes['Background']
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                backgroundcolor = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                backgroundcolor = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            backgroundmix = next((wn for wn in worldnodes if wn.type in {'MIX', 'MIX_RGB'}), False)
+            backgroundnode.inputs[0].default_value[:3] = backgroundcolor
+            if backgroundmix:
+                backgroundmix.inputs[2].default_value[:3] = backgroundcolor
+            new_chunk.bytes_read += temp_chunk.bytes_read
+
+        # If bitmap chunk
+        elif CreateWorld and new_chunk.ID == BITMAP:
+            bitmap_name, read_str_len = read_string(file)
+            if contextWorld is None:
+                path, filename = os.path.split(file.name)
+                realname, ext = os.path.splitext(filename)
+                contextWorld = bpy.data.worlds.new("Bitmap: " + realname)
+                context.scene.world = contextWorld
+            contextWorld.use_nodes = True
+            links = contextWorld.node_tree.links
+            nodes = contextWorld.node_tree.nodes
+            bitmap_mix = nodes.new(type='ShaderNodeMixRGB')
+            bitmapnode = nodes.new(type='ShaderNodeTexEnvironment')
+            bitmapping = nodes.new(type='ShaderNodeMapping')
+            bitmap_mix.label = "Background Mix"
+            bitmapnode.label = "Bitmap: " + bitmap_name
+            bitmap_mix.inputs[2].default_value = nodes['Background'].inputs[0].default_value
+            bitmapnode.image = load_image(bitmap_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
+            bitmap_mix.inputs[0].default_value = 0.5 if bitmapnode.image is not None else 1.0
+            coordinate = nodes.get("Texture Coordinate", nodes.new(type='ShaderNodeTexCoord'))
+            bitmapnode.location = (-520, 400)
+            bitmap_mix.location = (-200, 360)
+            bitmapping.location = (-740, 400)
+            coordinate.location = (-1340, 400)
+            links.new(bitmap_mix.outputs[0], nodes['Background'].inputs[0])
+            links.new(bitmapnode.outputs[0], bitmap_mix.inputs[1])
+            links.new(bitmapping.outputs[0], bitmapnode.inputs[0])
+            if not bitmapping.inputs['Vector'].is_linked:
+                links.new(coordinate.outputs[0], bitmapping.inputs[0])
+            new_chunk.bytes_read += read_str_len
+
+        # If gradient chunk:
+        elif CreateWorld and new_chunk.ID == VGRADIENT:
+            if contextWorld is None:
+                path, filename = os.path.split(file.name)
+                realname, ext = os.path.splitext(filename)
+                contextWorld = bpy.data.worlds.new("Gradient: " + realname)
+                context.scene.world = contextWorld
+            contextWorld.use_nodes = True
+            links = contextWorld.node_tree.links
+            nodes = contextWorld.node_tree.nodes
+            gradientnode = nodes.new(type='ShaderNodeValToRGB')
+            layerweight = nodes.new(type='ShaderNodeLayerWeight')
+            conversion = nodes.new(type='ShaderNodeMath')
+            normalnode = nodes.new(type='ShaderNodeNormal')
+            mappingnode = nodes.get("Mapping", False)
+            coordinates = nodes.get("Texture Coordinate", False)
+            backgroundmix = next((wn for wn in nodes if wn.type in {'MIX', 'MIX_RGB'}), False)
+            conversion.location = (-740, -60)
+            layerweight.location = (-940, 170)
+            normalnode.location = (-1140, 300)
+            gradientnode.location = (-520, -20)
+            gradientnode.label = "Gradient"
+            conversion.operation = 'MULTIPLY_ADD'
+            conversion.name = conversion.label = "Multiply"
+            links.new(conversion.outputs[0], gradientnode.inputs[0])
+            links.new(layerweight.outputs[1], conversion.inputs[0])
+            links.new(layerweight.outputs[0], conversion.inputs[1])
+            links.new(normalnode.outputs[1], conversion.inputs[2])
+            links.new(normalnode.outputs[0], layerweight.inputs[1])
+            links.new(normalnode.outputs[1], layerweight.inputs[0])
+            if not coordinates:
+                coordinates = nodes.new(type='ShaderNodeTexCoord')
+                coordinates.location = (-1340, 400)
+            links.new(coordinates.outputs[6], normalnode.inputs[0])
+            if backgroundmix:
+                links.new(gradientnode.outputs[0], backgroundmix.inputs[2])
+            else:
+                links.new(gradientnode.outputs[0], nodes['Background'].inputs[0])
+            if mappingnode and not mappingnode.inputs['Vector'].is_linked:
+                links.new(coordinates.outputs[0], mappingnode.inputs[0])
+            gradientnode.color_ramp.elements.new(read_float(new_chunk))
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                gradientnode.color_ramp.elements[0].color[:3] = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                gradientnode.color_ramp.elements[0].color[:3] = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            new_chunk.bytes_read += temp_chunk.bytes_read
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                gradientnode.color_ramp.elements[1].color[:3] = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                gradientnode.color_ramp.elements[1].color[:3] = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            new_chunk.bytes_read += temp_chunk.bytes_read
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                gradientnode.color_ramp.elements[2].color[:3] = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                gradientnode.color_ramp.elements[2].color[:3] = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            new_chunk.bytes_read += temp_chunk.bytes_read
+
+        # If fog chunk:
+        elif CreateWorld and new_chunk.ID == FOG:
+            if contextWorld is None:
+                path, filename = os.path.split(file.name)
+                realname, ext = os.path.splitext(filename)
+                contextWorld = bpy.data.worlds.new("Fog: " + realname)
+                context.scene.world = contextWorld
+            contextWorld.use_nodes = True
+            links = contextWorld.node_tree.links
+            nodes = contextWorld.node_tree.nodes
+            fognode = nodes.new(type='ShaderNodeVolumeAbsorption')
+            fognode.label = "Fog"
+            fognode.location = (10, 20)
+            volumemix = nodes.get("Volume", False)
+            if volumemix:
+                links.new(fognode.outputs[0], volumemix.inputs[1])
+            else:
+                links.new(fognode.outputs[0], nodes['World Output'].inputs[1])
+            contextWorld.mist_settings.use_mist = True
+            contextWorld.mist_settings.start = read_float(new_chunk)
+            nearfog = read_float(new_chunk) * 0.01
+            contextWorld.mist_settings.depth = read_float(new_chunk)
+            farfog = read_float(new_chunk) * 0.01
+            fognode.inputs[1].default_value = (nearfog + farfog) * 0.5
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                fognode.inputs[0].default_value[:3] = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                fognode.inputs[0].default_value[:3] = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            new_chunk.bytes_read += temp_chunk.bytes_read
+        elif CreateWorld and new_chunk.ID == FOG_BGND:
+            pass
+
+        # If layer fog chunk:
+        elif CreateWorld and new_chunk.ID == LAYER_FOG:
+            """Fog options flags are bit 20 (0x100000) for background fogging,
+               bit 0 (0x1) for bottom falloff, and bit 1 (0x2) for top falloff."""
+            if contextWorld is None:
+                path, filename = os.path.split(file.name)
+                realname, ext = os.path.splitext(filename)
+                contextWorld = bpy.data.worlds.new("LayerFog: " + realname)
+                context.scene.world = contextWorld
+            contextWorld.use_nodes = True
+            links = contextWorld.node_tree.links
+            nodes = contextWorld.node_tree.nodes
+            worldout = nodes.get("World Output")
+            worldfog = worldout.inputs[1]
+            layerfog = nodes.new(type='ShaderNodeVolumeScatter')
+            litepath = nodes.get("Light Path", nodes.new('ShaderNodeLightPath'))
+            fognode = nodes.get("Volume Absorption", False)
+            if fognode:
+                cuenode = nodes.get("Map Range", False)
+                mxvolume = nodes.new(type='ShaderNodeMixShader')
+                mxvolume.label = mxvolume.name = "Volume"
+                mxvolume.location = (220, 0)
+                cuesource = cuenode.outputs[0] if cuenode else litepath.outputs[7]
+                cuetarget = cuenode.inputs[3] if cuenode else mxvolume.inputs[0]
+                links.new(fognode.outputs[0], mxvolume.inputs[1])
+                links.new(litepath.outputs[7], cuetarget)
+                links.new(cuesource, mxvolume.inputs[0])
+                links.new(mxvolume.outputs[0], worldfog)
+                worldfog = mxvolume.inputs[2]
+            layerfog.label = "Layer Fog"
+            layerfog.location = (10, -120)
+            worldout.location = (440, 160)
+            litepath.location = (-200, 70)
+            links.new(layerfog.outputs[0], worldfog)
+            links.new(litepath.outputs[8], layerfog.inputs[2])
+            links.new(litepath.outputs[0], nodes['Background'].inputs[1])
+            contextWorld.mist_settings.use_mist = True
+            contextWorld.mist_settings.start = read_float(new_chunk)
+            contextWorld.mist_settings.height = read_float(new_chunk)
+            density = read_float(new_chunk)  # Density
+            layerfog.inputs[1].default_value = density if density < 1 else density * 0.01
+            layerfog_flag = read_long(new_chunk)
+            if layerfog_flag == 0:
+                contextWorld.mist_settings.falloff = 'LINEAR'
+            if layerfog_flag & 0x1:
+                contextWorld.mist_settings.falloff = 'QUADRATIC'
+            if layerfog_flag & 0x2:
+                contextWorld.mist_settings.falloff = 'INVERSE_QUADRATIC'
+            read_chunk(file, temp_chunk)
+            if temp_chunk.ID == COLOR_F:
+                layerfog.inputs[0].default_value[:3] = read_float_array(temp_chunk)
+            elif temp_chunk.ID == LIN_COLOR_F:
+                layerfog.inputs[0].default_value[:3] = read_float_array(temp_chunk)
+            else:
+                skip_to_end(file, temp_chunk)
+            new_chunk.bytes_read += temp_chunk.bytes_read
+
+        # If distance cue chunk:
+        elif CreateWorld and new_chunk.ID == DISTANCE_CUE:
+            if contextWorld is None:
+                path, filename = os.path.split(file.name)
+                realname, ext = os.path.splitext(filename)
+                contextWorld = bpy.data.worlds.new("DistanceCue: " + realname)
+                context.scene.world = contextWorld
+            contextWorld.use_nodes = True
+            links = contextWorld.node_tree.links
+            nodes = contextWorld.node_tree.nodes
+            distcue_node = nodes.new(type='ShaderNodeMapRange')
+            camera_data = nodes.new(type='ShaderNodeCameraData')
+            distcue_node.label = "Distance Cue"
+            distcue_node.clamp = False
+            distcue_mix = nodes.get("Volume", False)
+            distcuepath = nodes.get("Light Path", False)
+            if not distcuepath:
+                distcuepath = nodes.new(type='ShaderNodeLightPath')
+            distcue_node.location = (-940, 10)
+            distcuepath.location = (-1140, 70)
+            camera_data.location = (-1340, 166)
+            raysource = distcuepath.outputs[7] if distcue_mix else distcuepath.outputs[0]
+            raytarget = distcue_mix.inputs[0] if distcue_mix else nodes['Background'].inputs[1]
+            links.new(camera_data.outputs[1], distcue_node.inputs[1])
+            links.new(camera_data.outputs[2], distcue_node.inputs[0])
+            links.new(raysource, distcue_node.inputs[4])
+            links.new(distcue_node.outputs[0], raytarget)
+            distcue_node.inputs[0].name = "Distance"
+            distcue_node.inputs[2].name = "Near"
+            distcue_node.inputs[3].name = "Far"
+            distcue_node.inputs[1].default_value = read_float(new_chunk)  # Near Cue
+            distcue_node.inputs[2].default_value = read_float(new_chunk)  # Near Dim
+            distcue_node.inputs[4].default_value = contextWorld.light_settings.distance = read_float(new_chunk)  # Far Cue
+            distcue_node.inputs[3].default_value = read_float(new_chunk)  # Far Dim
+        elif CreateWorld and new_chunk.ID == DCUE_BGND:
+            pass
+
+        elif CreateWorld and new_chunk.ID in {USE_FOG, USE_LAYER_FOG}:
+            context.view_layer.use_pass_mist = True
+
         # If object chunk - can be mesh, light and spot or camera
         elif new_chunk.ID == OBJECT:
             if CreateBlenderObject:
                 putContextMesh(context, contextMesh_vertls, contextMesh_facels, contextMesh_flag,
-                               contextMeshMaterials, contextMesh_smooth, WORLD_MATRIX)
+                               contextMeshMaterials, contextMesh_smooth)
 
                 contextMesh_vertls = []
                 contextMesh_facels = []
@@ -1097,7 +1158,6 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 contextMesh_flag = None
                 contextMesh_smooth = None
                 contextMeshUV = None
-                contextMatrix = None
 
             CreateBlenderObject = True if CreateMesh else False
             CreateLightObject = CreateCameraObject = False
@@ -1149,8 +1209,8 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             temp_data = file.read(SZ_4x3MAT)
             mtx = list(struct.unpack('<ffffffffffff', temp_data))
             new_chunk.bytes_read += SZ_4x3MAT
-            contextMatrix = mathutils.Matrix(
-                (mtx[:3] + [0], mtx[3:6] + [0], mtx[6:9] + [0], mtx[9:] + [1])).transposed()
+            matrix = mathutils.Matrix((mtx[:3]+[0], mtx[3:6]+[0], mtx[6:9]+[0], mtx[9:]+[1])).transposed()
+            matrix_dictionary[contextObName] = matrix
 
         # If hierarchy chunk
         elif CreateMesh and new_chunk.ID == OBJECT_HIERARCHY:
@@ -1166,14 +1226,13 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 skip_to_end(file, new_chunk)
             else:
                 CreateLightObject = True
-                light = bpy.data.lights.new("Lamp", 'POINT')
+                light = bpy.data.lights.new(contextObName, 'POINT')
                 contextLamp = bpy.data.objects.new(contextObName, light)
                 context.view_layer.active_layer_collection.collection.objects.link(contextLamp)
                 imported_objects.append(contextLamp)
                 object_dictionary[contextObName] = contextLamp
                 contextLamp.data.use_shadow = False
                 contextLamp.location = read_float_array(new_chunk)  # Position
-            contextMatrix = None # Reset matrix
         elif CreateLightObject and new_chunk.ID == COLOR_F:  # Color
             contextLamp.data.color = read_float_array(new_chunk)
         elif CreateLightObject and new_chunk.ID == LIGHT_OUTER_RANGE:  # Distance
@@ -1215,18 +1274,42 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             contextLamp.data.use_nodes = True
             nodes = contextLamp.data.node_tree.nodes
             links = contextLamp.data.node_tree.links
+            mix = nodes.new(type='ShaderNodeMixRGB')
+            rgb = nodes.new(type='ShaderNodeRGB')
+            mix.blend_type = 'LINEAR_LIGHT'
+            mix.label = "Emission Color"
+            emit = nodes.get("Emission")
+            emit.label = "Projector"
+            emit.location = (80, 300)
+            rgb.location = (-380, 60)
+            mix.location = (-140, 340)
             gobo_name, read_str_len = read_string(file)
             new_chunk.bytes_read += read_str_len
             projection = nodes.new(type='ShaderNodeTexImage')
-            projection.label = gobo_name
-            projection.location = (-340, 360)
+            promapping = nodes.new(type='ShaderNodeMapping')
+            protxcoord = nodes.new(type='ShaderNodeTexCoord')
+            prolitpath = nodes.new(type='ShaderNodeLightPath')
+            prolitfall = nodes.new(type='ShaderNodeLightFalloff')
+            projection.label = "Gobo: " + gobo_name
+            protxcoord.label = "Gobo Coordinate"
+            promapping.vector_type = 'TEXTURE'
+            prolitfall.location = (-720, 20)
+            projection.location = (-480, 440)
+            promapping.location = (-720, 440)
+            protxcoord.location = (-940, 440)
+            prolitpath.location = (-940, 180)
             projection.image = load_image(gobo_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
-            emitnode = next((node for node in nodes if node.type == 'EMISSION'), False)
-            emission = emitnode if emitnode else nodes.new(type='ShaderNodeEmission')
-            emission.label = "Projector"
-            emission.location = (0, 300)
-            links.new(emission.outputs['Emission'], nodes['Light Output'].inputs[0])
-            links.new(projection.outputs['Color'], emission.inputs[0])
+            emit.inputs[0].default_value[:3] = mix.inputs[2].default_value[:3] = rgb.outputs[0].default_value[:3] = contextLamp.data.color
+            links.new(emit.outputs[0], nodes['Light Output'].inputs[0])
+            links.new(promapping.outputs[0], projection.inputs[0])
+            links.new(protxcoord.outputs[2], promapping.inputs[0])
+            links.new(prolitpath.outputs[8], prolitfall.inputs[0])
+            links.new(prolitpath.outputs[7], prolitfall.inputs[1])
+            links.new(prolitfall.outputs[1], emit.inputs[1])
+            links.new(prolitfall.outputs[0], mix.inputs[0])
+            links.new(projection.outputs[0], mix.inputs[1])
+            links.new(mix.outputs[0], emit.inputs[0])
+            links.new(rgb.outputs[0], mix.inputs[2])
         elif CreateLightObject and new_chunk.ID == OBJECT_HIERARCHY:  # Hierarchy
             child_id = get_hierarchy(new_chunk)
         elif CreateLightObject and new_chunk.ID == OBJECT_PARENT:
@@ -1240,7 +1323,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 skip_to_end(file, new_chunk)
             else:
                 CreateCameraObject = True
-                camera = bpy.data.cameras.new("Camera")
+                camera = bpy.data.cameras.new(contextObName)
                 contextCamera = bpy.data.objects.new(contextObName, camera)
                 context.view_layer.active_layer_collection.collection.objects.link(contextCamera)
                 imported_objects.append(contextCamera)
@@ -1252,12 +1335,12 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 contextCamera.rotation_euler.y = read_float(new_chunk)  # Roll
                 contextCamera.rotation_euler.z = direction[1]
                 contextCamera.data.lens = read_float(new_chunk)  # Focal length
-            contextMatrix = None  # Reset matrix
         elif CreateCameraObject and new_chunk.ID == OBJECT_CAM_RANGES:  # Range
-            camrange = read_float(new_chunk)
-            startrange = camrange if camrange >= 0.01 else 0.1
+            camrange = max(read_float(new_chunk), 0.01)
+            endrange = max(read_float(new_chunk), 100)
+            startrange = camrange if camrange < 50 else camrange * 0.001
             contextCamera.data.clip_start = startrange * CONSTRAIN
-            contextCamera.data.clip_end = read_float(new_chunk) * CONSTRAIN
+            contextCamera.data.clip_end = endrange* CONSTRAIN
         elif CreateCameraObject and new_chunk.ID == OBJECT_HIERARCHY:  # Hierarchy
             child_id = get_hierarchy(new_chunk)
         elif CreateCameraObject and new_chunk.ID == OBJECT_PARENT:
@@ -1283,6 +1366,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             tracking = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[-1]
             spotting = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[-2]
             object_id = hierarchy = ROOT_OBJECT
+            trackposition.clear()
             child = None
             if not CreateWorld and tracking == 'AMBIENT':
                 skip_to_end(file, new_chunk)
@@ -1291,7 +1375,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             if not CreateCamera and tracking == 'CAMERA':
                 skip_to_end(file, new_chunk)
 
-        elif CreateTrackData and new_chunk.ID in {KF_TARGET_CAMERA, KF_TARGET_LIGHT}:
+        elif new_chunk.ID in {KF_TARGET_CAMERA, KF_TARGET_LIGHT}:
             tracktype = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[1]
             tracking = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[-1]
             child = None
@@ -1317,21 +1401,44 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                     nodetree = child.node_tree
                     links = nodetree.links
                     nodes = nodetree.nodes
-                    worldout = nodes['World Output']
-                    mixshade = nodes.new(type='ShaderNodeMixShader')
-                    ambinode = nodes.new(type='ShaderNodeEmission')
+                    backlite = nodes.get("Background")
+                    worldout = nodes.get("World Output")
                     ambilite = nodes.new(type='ShaderNodeRGB')
+                    raymixer = nodes.new(type='ShaderNodeMix')
+                    mathnode = nodes.new(type='ShaderNodeMath')
+                    ambinode = nodes.new(type='ShaderNodeEmission')
+                    mixshade = nodes.new(type='ShaderNodeMixShader')
+                    litefall = nodes.new(type='ShaderNodeLightFalloff')
+                    raymixer.label = "Ambient Mix"
                     ambilite.label = "Ambient Color"
-                    mixshade.label = "Surface"
+                    raymixer.inputs[3].name = "Ambient"
+                    raymixer.inputs[2].name = "Background"
+                    mixshade.label = mixshade.name = "Surface"
+                    litepath = nodes.get("Light Path", False)
                     ambinode.inputs[0].default_value[:3] = child.color
-                    ambinode.location = (10, 180)
-                    worldout.location = (600, 180)
-                    mixshade.location = (300, 280)
-                    ambilite.location = (-250, 100)
-                    links.new(mixshade.outputs[0], worldout.inputs['Surface'])
-                    links.new(nodes['Background'].outputs[0], mixshade.inputs[1])
+                    if not litepath:
+                        litepath = nodes.new('ShaderNodeLightPath')
+                    ambinode.location = (10, 160)
+                    worldout.location = (440, 160)
+                    mixshade.location = (220, 280)
+                    ambilite.location = (-200, -30)
+                    raymixer.location = (-200, 170)
+                    litepath.location = (-1340, 70)
+                    mathnode.location = (-1140, 100)
+                    litefall.location = (-1140, -80)
+                    links.new(litepath.outputs[0], mathnode.inputs[0])
+                    links.new(litepath.outputs[3], mathnode.inputs[1])
+                    links.new(litepath.outputs[5], litefall.inputs[0])
+                    links.new(litepath.outputs[2], litefall.inputs[1])
+                    links.new(litefall.outputs[0], raymixer.inputs[2])
+                    links.new(mathnode.outputs[0], backlite.inputs[1])
+                    links.new(mathnode.outputs[0], ambinode.inputs[1])
+                    links.new(mathnode.outputs[0], raymixer.inputs[3])
+                    links.new(raymixer.outputs[0], mixshade.inputs[0])
                     links.new(ambinode.outputs[0], mixshade.inputs[2])
                     links.new(ambilite.outputs[0], ambinode.inputs[0])
+                    links.new(mixshade.outputs[0], worldout.inputs[0])
+                    links.new(backlite.outputs[0], mixshade.inputs[1])
                     ambinode.label = object_name if object_name != '$AMBIENT$' else "Ambient"
                 elif CreateEmpty and tracking == 'OBJECT' and object_name == '$$$DUMMY':
                     child = bpy.data.objects.new(object_name, None)  # Create an empty object
@@ -1355,10 +1462,10 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             if child.name == '$$$DUMMY':
                 child.name = instance_name
             else:  # Child is an instance
-                child = child.copy()
-                child.name = object_name + "." + instance_name
+                child = bpy.data.objects.new(object_name + '.' + instance_name.split('.')[-1], child.data.copy())
                 context.view_layer.active_layer_collection.collection.objects.link(child)
-                object_dict[object_id] = child
+                matrix_dictionary[child.name] = matrix_dictionary.get(object_name, mathutils.Matrix()).copy()
+                imported_objects.append(child)
                 object_list[-1] = child
             object_dictionary[child.name] = child
             new_chunk.bytes_read += read_str_len
@@ -1374,34 +1481,50 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
 
         elif KEYFRAME and new_chunk.ID == COL_TRACK_TAG and tracking == 'AMBIENT':  # Ambient
             keyframe_data = {}
-            keyframe_data[0] = child.color[:]
+            keyframe_data[0] = ambinode.inputs[0].default_value[:3] = child.color[:]
             child.color = read_track_data(new_chunk)[0]
-            ambinode.inputs[0].default_value[:3] = child.color
             ambilite.outputs[0].default_value[:3] = child.color
             for keydata in keyframe_data.items():
-                ambinode.inputs[0].default_value[:3] = keydata[1]
                 child.color = ambilite.outputs[0].default_value[:3] = keydata[1]
                 child.keyframe_insert(data_path="color", frame=keydata[0])
                 nodetree.keyframe_insert(data_path="nodes[\"RGB\"].outputs[0].default_value", frame=keydata[0])
-                nodetree.keyframe_insert(data_path="nodes[\"Emission\"].inputs[0].default_value", frame=keydata[0])
             contextTrack_flag = False
 
         elif KEYFRAME and new_chunk.ID == COL_TRACK_TAG and tracking == 'LIGHT':  # Color
             keyframe_data = {}
             keyframe_data[0] = child.data.color[:]
             child.data.color = read_track_data(new_chunk)[0]
+            child.data.use_nodes = True
+            tree = child.data.node_tree
+            emitnode = tree.nodes.get("Emission")
+            emitnode.inputs[0].default_value[:3] = child.data.color
+            colornode = tree.nodes.get("RGB", False)
+            lightfall = tree.nodes.get("Light Falloff", False)
+            if not colornode:
+                colornode = tree.nodes.new('ShaderNodeRGB')
+                colornode.location = (-380, 60)
+                tree.links.new(colornode.outputs[0], emitnode.inputs[0])
+            if not lightfall:
+                lightfall = tree.nodes.new('ShaderNodeLightFalloff')
+                lightpath = tree.nodes.new('ShaderNodeLightPath')
+                lightfall.location = (-720, 20)
+                lightpath.location = (-940, 180)
+                tree.links.new(lightpath.outputs[8], lightfall.inputs[0])
+                tree.links.new(lightpath.outputs[7], lightfall.inputs[1])
+            tree.links.new(lightfall.outputs[1], emitnode.inputs[1])
+            colornode.outputs[0].default_value[:3] = child.data.color
             for keydata in keyframe_data.items():
-                child.data.color = keydata[1]
+                child.data.color = colornode.outputs[0].default_value[:3] = keydata[1]
                 child.data.keyframe_insert(data_path="color", frame=keydata[0])
+                tree.keyframe_insert(data_path="nodes[\"RGB\"].outputs[0].default_value", frame=keydata[0])
             contextTrack_flag = False
 
         elif KEYFRAME and new_chunk.ID == POS_TRACK_TAG and tracktype == 'OBJECT':  # Translation
             keyframe_data = {}
             keyframe_data[0] = child.location[:]
-            child.location = read_track_data(new_chunk)[0]
-            if child.type in {'LIGHT', 'CAMERA'}:
-                trackposition[0] = child.location
-                CreateTrackData = True
+            child.location = mathutils.Vector(read_track_data(new_chunk)[0])
+            if tracking == 'CAMERA' or spotting == 'SPOT':
+                trackposition.setdefault(child.name, []).append((0, child.location))
             if contextTrack_flag & 0x8:  # Flag 0x8 locks X axis
                 child.lock_location[0] = True
             if contextTrack_flag & 0x10:  # Flag 0x10 locks Y axis
@@ -1409,7 +1532,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             if contextTrack_flag & 0x20:  # Flag 0x20 locks Z axis
                 child.lock_location[2] = True
             for keydata in keyframe_data.items():
-                trackposition[keydata[0]] = keydata[1]  # Keep track to position for target calculation
+                trackposition.setdefault(child.name, []).append((keydata[0], keydata[1]))  # Keep track to position
                 child.location = apply_constrain(keydata[1]) if hierarchy == ROOT_OBJECT else mathutils.Vector(keydata[1])
                 if MEASURE != 1.0:
                     child.location = child.location * MEASURE
@@ -1426,16 +1549,16 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif KEYFRAME and new_chunk.ID == POS_TRACK_TAG and tracktype == 'TARGET':  # Target position
             keyframe_data = {}
             location = child.location
-            keyframe_data[0] = trackposition[0]
+            keyframe_data[0] = dict(trackposition.get(child.name, [(0, location)]))[0]
             target = mathutils.Vector(read_track_data(new_chunk)[0])
             direction = calc_target(location, target)
             child.rotation_euler.x = direction[0]
             child.rotation_euler.z = direction[1]
             for keydata in keyframe_data.items():
-                track = trackposition.get(keydata[0], child.location)
-                locate = mathutils.Vector(track)
+                tracks = dict(trackposition.get(child.name, [(0, location)]))
+                locate = tracks.get(keydata[0], location)
                 target = mathutils.Vector(keydata[1])
-                direction = calc_target(locate, target)
+                direction = calc_target(mathutils.Vector(locate), target)
                 rotate = mathutils.Euler((direction[0], 0.0, direction[1]), 'XYZ').to_matrix()
                 scale = mathutils.Vector.Fill(3, (CONSTRAIN * 0.1)) if CONSTRAIN != 0.0 else child.scale
                 transformation = mathutils.Matrix.LocRotScale(locate, rotate, scale)
@@ -1464,7 +1587,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             for i in range(nkeys):
                 nframe = read_long(new_chunk)
                 nflags = read_short(new_chunk)
-                for f in range(bin(nflags).count('1')):
+                for f in range(bin(nflags)[-5:].count('1')):
                     temp_data = file.read(SZ_FLOAT)  # Check for spline term values
                     new_chunk.bytes_read += SZ_FLOAT
                 temp_data = file.read(SZ_4FLOAT)
@@ -1472,10 +1595,11 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 new_chunk.bytes_read += SZ_4FLOAT
                 keyframe_rotation[nframe] = rotation
             rad, axis_x, axis_y, axis_z = keyframe_rotation[0]
-            child.rotation_euler = mathutils.Quaternion((axis_x, axis_y, axis_z), -rad).to_euler()  # Why negative?
+            cpt = matrix_dictionary.get(child.name, child.matrix_world).to_euler()
+            child.rotation_euler = mathutils.Quaternion((axis_x, axis_y, axis_z), -rad).to_euler('XYZ', cpt)  # Why negative?
             for keydata in keyframe_rotation.items():
                 rad, axis_x, axis_y, axis_z = keydata[1]
-                child.rotation_euler = mathutils.Quaternion((axis_x, axis_y, axis_z), -rad).to_euler()
+                child.rotation_euler = mathutils.Quaternion((axis_x, axis_y, axis_z), -rad).to_euler('XYZ', cpt)
                 if hierarchy == ROOT_OBJECT:
                     child.rotation_euler.rotate(CONVERSE)
                 if not tflags & 0x100:  # Flag 0x100 unlinks X axis
@@ -1488,7 +1612,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif KEYFRAME and new_chunk.ID == SCL_TRACK_TAG and tracktype == 'OBJECT':  # Scale
             keyframe_data = {}
             keyframe_data[0] = child.scale[:]
-            child.scale = read_track_data(new_chunk)[0]
+            child.scale = mathutils.Vector(read_track_data(new_chunk)[0])
             if contextTrack_flag & 0x8:  # Flag 0x8 locks X axis
                 child.lock_scale[0] = True
             if contextTrack_flag & 0x10:  # Flag 0x10 locks Y axis
@@ -1550,40 +1674,10 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         # update the previous chunk bytes read
         previous_chunk.bytes_read += new_chunk.bytes_read
 
-    # FINISHED LOOP
-    # There will be a number of objects still not added
+    # FINISHED LOOP - There will be a number of objects still not added
     if CreateBlenderObject:
         putContextMesh(context, contextMesh_vertls, contextMesh_facels, contextMesh_flag,
-            contextMeshMaterials, contextMesh_smooth, WORLD_MATRIX)
-
-    # Assign parents to objects
-    # check _if_ we need to assign first because doing so recalcs the depsgraph
-    for ind, ob in enumerate(object_list):
-        parent = object_parent[ind]
-        if parent == ROOT_OBJECT:
-            if ob is not None:
-                ob.parent = None
-        elif parent not in object_dict:
-            try:
-                ob.parent = object_list[parent]
-            except:  # seems object is None or not in list
-                object_list.pop(ind)
-        else:  # get parent from node_id number
-            try:
-                ob.parent = object_dict.get(parent)
-            except:  # object is None or self to parent exception
-                object_list.pop(ind)
-
-        #pivot_list[ind] += pivot_list[parent]  # Not sure this is correct, should parent space matrix be applied before combining?
-
-    # if parent name
-    parent_dictionary.pop(None, ...)
-    for par, objs in parent_dictionary.items():
-        parent = object_dictionary.get(par)
-        for ob in objs:
-            if parent is not None:
-                ob.parent = parent
-    parent_dictionary.clear()
+                       contextMeshMaterials, contextMesh_smooth)
 
     # If hierarchy
     hierarchy = dict(zip(childs_list, parent_list))
@@ -1594,16 +1688,38 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         if child_obj and parent_obj is not None:
             child_obj.parent = parent_obj
 
-    # fix pivots
+    # Assign parents to objects. Check if we need to assign first because doing so recalcs the depsgraph
+    parent_dictionary.pop(None, ...)
     for ind, ob in enumerate(object_list):
-        if ob is None:  # remove None
-            object_list.remove(ob)
-        elif ob.type == 'MESH':
-            pivot = pivot_list[ind]
-            pivot_matrix = object_matrix.get(ob, mathutils.Matrix())  # unlikely to fail
-            pivot_matrix = mathutils.Matrix.Translation(-1 * pivot)
-            # pivot_matrix = mathutils.Matrix.Translation(pivot_matrix.to_3x3() @ -pivot)
-            ob.data.transform(pivot_matrix)
+        if ob is None:
+            continue
+        parent = object_parent[ind]
+        found = ob in set().union(sum(parent_dictionary.values(), []))
+        if ob.name in parent_dictionary.keys():
+            kids = parent_dictionary.get(ob.name)
+            for kid in kids:
+                kid.parent = ob
+        elif not found:
+            if parent == ROOT_OBJECT:
+                ob.parent = None
+            elif parent not in object_dict:
+                parent = parent-1 if parent == object_list.index(ob) else parent
+                try:  # get parent from object list
+                    ob.parent = object_list[parent]
+                except Exception as exc:
+                    print("\tIndexError:", exc)
+            else:  # get parent from node_id number
+                try:
+                    ob.parent = object_dict.get(parent)
+                except:  # self to parent exception
+                    pass
+
+        # Fix Pivots
+        pivot = pivot_list[ind]
+        trans_matrix = matrix_dictionary.get(ob.name, mathutils.Matrix())
+        pivot_matrix = mathutils.Matrix.Translation(trans_matrix.to_3x3() @ -pivot)
+        if APPLY_MATRIX and ob.type == 'MESH':
+            ob.data.transform(trans_matrix.inverted() @ pivot_matrix)
 
 
 ##########
@@ -1611,8 +1727,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
 ##########
 
 def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
-             FILTER=None, WORLD_MATRIX=False, KEYFRAME=True, APPLY_MATRIX=True,
-             CONVERSE=None, CURSOR=False, PIVOT=False):
+             FILTER=None, KEYFRAME=True, APPLY_MATRIX=True, CONVERSE=None, CURSOR=False):
 
     print("importing 3DS: %r..." % (filepath), end="")
 
@@ -1623,12 +1738,10 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
     duration = time.time()
     current_chunk = Chunk()
     file = open(filepath, 'rb')
-    context.window.cursor_set('WAIT')
 
     # here we go!
     read_chunk(file, current_chunk)
     if current_chunk.ID != PRIMARY:
-        context.window.cursor_set('DEFAULT')
         print("\tFatal Error:  Not a valid 3ds file: %r" % filepath)
         file.close()
         return
@@ -1640,7 +1753,8 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
 
     # fixme, make unglobal, clear in case
     object_dictionary.clear()
-    object_matrix.clear()
+    parent_dictionary.clear()
+    matrix_dictionary.clear()
     scn = context.scene
 
     if UNITS:
@@ -1662,18 +1776,15 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
         elif unit_length == 'MICROMETERS':
             MEASURE = 0.000001
 
+    context.window.cursor_set('WAIT')
     imported_objects = []  # Fill this list with objects
     process_next_chunk(context, file, current_chunk, imported_objects, CONSTRAIN, FILTER,
-                       IMAGE_SEARCH, WORLD_MATRIX, KEYFRAME, CONVERSE, MEASURE, CURSOR)
+                       IMAGE_SEARCH, KEYFRAME, APPLY_MATRIX, CONVERSE, MEASURE, CURSOR)
 
     # fixme, make unglobal
     object_dictionary.clear()
-    object_matrix.clear()
-
-    if APPLY_MATRIX:
-        for ob in imported_objects:
-            if ob.type == 'MESH':
-                ob.data.transform(ob.matrix_local.inverted())
+    parent_dictionary.clear()
+    matrix_dictionary.clear()
 
     if UNITS:
         unit_mtx = mathutils.Matrix.Scale(MEASURE,4)
@@ -1695,37 +1806,6 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
             ob.scale.y = (square / (math.sqrt(pow(aspect,2) + 1.0)))
             ob.scale.z = 1.0
         ob.select_set(True)
-        if ob.type == 'MESH':
-            if PIVOT:
-                bpy.ops.object.origin_set(type='GEOMETRY_ORIGIN')
-            if not APPLY_MATRIX:  # Reset transform
-                bpy.ops.object.rotation_clear()
-                bpy.ops.object.location_clear()
-                bpy.ops.object.scale_clear()
-
-    """
-    if IMPORT_AS_INSTANCE:
-        name = filepath.split('\\')[-1].split('/')[-1]
-        # Create a group for this import.
-        group_scn = Scene.New(name)
-        for ob in imported_objects:
-            group_scn.link(ob) # dont worry about the layers
-
-        grp = Blender.Group.New(name)
-        grp.objects = imported_objects
-        grp_ob = Object.New('Empty', name)
-        grp_ob.enableDupGroup = True
-        grp_ob.DupGroup = grp
-        scn.link(grp_ob)
-        grp_ob.Layers = Layers
-        grp_ob.sel = 1
-    else:
-        # Select all imported objects.
-        for ob in imported_objects:
-            scn.link(ob)
-            ob.Layers = Layers
-            ob.sel = 1
-    """
 
     context.view_layer.update()
 
@@ -1759,20 +1839,35 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
         for screen in bpy.data.screens:
             for area in screen.areas:
                 if area.type == 'VIEW_3D':
-                    area.spaces[0].clip_start = scale * 0.1
-                    area.spaces[0].clip_end = scale * 10000
+                    area.spaces[0].clip_start = max(scale * 0.1 * MEASURE, 0.01)
+                    area.spaces[0].clip_end = max(scale * 10000 * MEASURE, 1000)
 
     context.window.cursor_set('DEFAULT')
     print(" done in %.4f sec." % (time.time() - duration))
     file.close()
 
 
-def load(operator, context, filepath="", constrain_size=0.0, use_scene_unit=False,
-         use_image_search=True, object_filter=None, use_world_matrix=False, use_keyframes=True,
-         use_apply_transform=True, global_matrix=None, use_cursor=False, use_center_pivot=False):
+def load(operator, context, files=None, directory="", filepath="", constrain_size=0.0,
+         use_scene_unit=False, use_image_search=True, object_filter=None, use_keyframes=True,
+         use_apply_transform=True, global_matrix=None, use_cursor=False, use_collection=False):
 
-    load_3ds(filepath, context, CONSTRAIN=constrain_size, UNITS=use_scene_unit,
-             IMAGE_SEARCH=use_image_search, FILTER=object_filter, WORLD_MATRIX=use_world_matrix, KEYFRAME=use_keyframes,
-             APPLY_MATRIX=use_apply_transform, CONVERSE=global_matrix, CURSOR=use_cursor, PIVOT=use_center_pivot,)
+    # Get the active collection
+    collection_init = context.view_layer.active_layer_collection.collection
+
+    # Load each selected file
+    for file in files:
+        # Create new collections if activated (collection name = 3ds file name)
+        if use_collection: 
+            collection = bpy.data.collections.new(Path(file.name).stem)
+            context.scene.collection.children.link(collection)
+            context.view_layer.active_layer_collection = context.view_layer.layer_collection.children[collection.name]
+        load_3ds(Path(directory, file.name), context, CONSTRAIN=constrain_size, UNITS=use_scene_unit,
+             IMAGE_SEARCH=use_image_search, FILTER=object_filter, KEYFRAME=use_keyframes,
+             APPLY_MATRIX=use_apply_transform, CONVERSE=global_matrix, CURSOR=use_cursor,)
+
+    # Retrive the initial collection as active
+    active = context.view_layer.layer_collection.children.get(collection_init.name)
+    if active is not None:
+        context.view_layer.active_layer_collection = active
 
     return {'FINISHED'}
