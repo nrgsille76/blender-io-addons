@@ -5,17 +5,17 @@
 
 
 > **Category**  
-> *Import-Export  
+> * Import-Export  
 > 
 > **Formats**  
 > * `.3ds`
 > * `.max`  
 > 
 > **Authors**  
-> *Sebastian Schrand 
+> * Sebastian Schrand 
 > 
 > **Maintainer**  
-> *Sebastian Sille (NRGSille)  
+> * Sebastian Sille (NRGSille)  
 
 ---  
 
