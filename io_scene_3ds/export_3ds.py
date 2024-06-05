@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: 2005 Bob Holcomb
+#                         2020 NRG Sille
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -40,6 +41,8 @@ O_CONSTS = 0x1500  # The origin of the 3D cursor
 AMBIENTLIGHT = 0x2100  # The color of the ambient light
 FOG = 0x2200  # The fog atmosphere settings
 USE_FOG = 0x2201  # The fog atmosphere flag
+DISTANCE_CUE = 0x2300  # The distance cue atmosphere settings
+USE_DISTANCE_CUE = 0x2301  # The distance cue atmosphere flag
 LAYER_FOG = 0x2302  # The fog layer atmosphere settings
 USE_LAYER_FOG = 0x2303  # The fog layer atmosphere flag
 MATERIAL = 45055  # 0xAFFF // This stored the texture info
@@ -159,9 +162,11 @@ ROLL_TRACK_TAG = 0xB024  # Roll transform tag
 COL_TRACK_TAG = 0xB025  # Color transform tag
 HOTSPOT_TRACK_TAG = 0xB027  # Hotspot transform tag
 FALLOFF_TRACK_TAG = 0xB028  # Falloff transform tag
-
 ROOT_OBJECT = 0xFFFF  # Root object
 
+EMPTYS = {'EMPTY'}
+DUMMYS = {'ARMATURE', 'LATTICE', 'SPEAKER', 'VOLUME'}
+OTHERS = {'CURVE', 'SURFACE', 'FONT', 'META'}
 
 # So 3ds max can open files, limit names to 12 in length
 # this is very annoying for filenames!
@@ -174,7 +179,7 @@ def sane_name(name):
         return name_fixed
 
     # Strip non ascii chars
-    new_name_clean = new_name = name.encode("ASCII", "replace").decode("ASCII")[:12]
+    new_name_clean = new_name = name.encode("ASCII", "replace").decode("ASCII")[:16]
     i = 0
 
     while new_name in name_unique:
@@ -683,12 +688,7 @@ def make_material_chunk(material, image):
     material_chunk = _3ds_chunk(MATERIAL)
     name = _3ds_chunk(MATNAME)
     shading = _3ds_chunk(MATSHADING)
-
     name_str = material.name if material else "None"
-
-    # if image:
-    #     name_str += image.name
-
     name.add_variable("name", _3ds_string(sane_name(name_str)))
     material_chunk.add_subchunk(name)
 
@@ -711,9 +711,10 @@ def make_material_chunk(material, image):
         material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, wrap.specular))
         material_chunk.add_subchunk(make_percent_subchunk(MATSHIN3, wrap.metallic))
         material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1 - wrap.alpha))
-        material_chunk.add_subchunk(make_percent_subchunk(MATXPFALL, wrap.transmission))
-        material_chunk.add_subchunk(make_percent_subchunk(MATSELFILPCT, wrap.emission_strength))
-        material_chunk.add_subchunk(make_percent_subchunk(MATREFBLUR, wrap.node_principled_bsdf.inputs['Coat Weight'].default_value))
+        if wrap.node_principled_bsdf is not None:
+            material_chunk.add_subchunk(make_percent_subchunk(MATXPFALL, wrap.transmission))
+            material_chunk.add_subchunk(make_percent_subchunk(MATSELFILPCT, wrap.emission_strength))
+            material_chunk.add_subchunk(make_percent_subchunk(MATREFBLUR, wrap.node_principled_bsdf.inputs['Coat Weight'].default_value))
         material_chunk.add_subchunk(shading)
 
         primary_tex = False
@@ -779,6 +780,7 @@ def make_material_chunk(material, image):
 
         # Make sure no textures are lost. Everything that doesn't fit
         # into a channel is exported as secondary texture
+        matmap = None
         for link in mtlks:
             mxsecondary = link.from_node if link.from_node.type == 'TEX_IMAGE' and link.to_socket.identifier in {'Color1', 'A_Color'} else False
             if mxsecondary:
@@ -972,9 +974,6 @@ def make_faces_chunk(tri_list, mesh, materialDict):
                 context_face_array = unique_mats[ma, img][1]
             except:
                 name_str = ma if ma else "None"
-                # if img:
-                #     name_str += img
-
                 context_face_array = _3ds_array()
                 unique_mats[ma, img] = _3ds_string(sane_name(name_str)), context_face_array
 
@@ -1275,7 +1274,7 @@ def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size):
     return track_chunk
 
 
-def make_object_node(ob, translation, rotation, scale, name_id):
+def make_object_node(ob, translation, rotation, scale, name_id, use_apply_transform):
     """Make a node chunk for a Blender object. Takes Blender object as parameter.
        Blender Empty objects are converted to dummy nodes."""
 
@@ -1298,7 +1297,7 @@ def make_object_node(ob, translation, rotation, scale, name_id):
     obj_node_header_chunk = _3ds_chunk(OBJECT_NODE_HDR)
     parent = ob.parent
 
-    if ob.type == 'EMPTY':  # Forcing to use the real name for empties
+    if ob.type in EMPTYS:  # Forcing to use the real name for empties
         # Empties called $$$DUMMY and use OBJECT_INSTANCE_NAME chunk as name
         obj_node_header_chunk.add_variable("name", _3ds_string(b"$$$DUMMY"))
         obj_node_header_chunk.add_variable("flags1", _3ds_ushort(0x4000))
@@ -1334,13 +1333,14 @@ def make_object_node(ob, translation, rotation, scale, name_id):
         obj_node.add_subchunk(obj_parent_name_chunk)
 
     # Empty objects need to have an extra chunk for the instance name
-    if ob.type == 'EMPTY':  # Will use a real object name for empties for now
+    if ob.type in EMPTYS:  # Will use a real object name for empties for now
         obj_instance_name_chunk = _3ds_chunk(OBJECT_INSTANCE_NAME)
         obj_instance_name_chunk.add_variable("name", _3ds_string(sane_name(name)))
         obj_node.add_subchunk(obj_instance_name_chunk)
 
-    if ob.type in {'MESH', 'EMPTY'}:  # Add a pivot point at the object center
-        pivot_pos = (translation[name])
+    if ob.type == 'MESH' or ob.type in EMPTYS:  # Add a pivot point at the object center
+        center_pos = mathutils.Vector((0.0, 0.0, 0.0))
+        pivot_pos = (translation[name]) if use_apply_transform else center_pos
         obj_pivot_chunk = _3ds_chunk(OBJECT_PIVOT)
         obj_pivot_chunk.add_variable("pivot", _3ds_point_3d(pivot_pos))
         obj_node.add_subchunk(obj_pivot_chunk)
@@ -1371,7 +1371,7 @@ def make_object_node(ob, translation, rotation, scale, name_id):
 
     obj_node.add_subchunk(make_track_chunk(POS_TRACK_TAG, ob, ob_pos, ob_rot, ob_scale))
 
-    if ob.type in {'MESH', 'EMPTY'}:
+    if ob.type == 'MESH' or ob.type in EMPTYS:
         obj_node.add_subchunk(make_track_chunk(ROT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
         obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
     if ob.type =='CAMERA':
@@ -1561,17 +1561,18 @@ def make_ambient_node(world):
 # EXPORT #
 ##########
 
-def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False, use_selection=False,
-         object_filter=None, use_hierarchy=False, use_keyframes=False, global_matrix=None, use_cursor=False):
+def save(operator, context, filepath="", collection="", scale_factor=1.0, use_scene_unit=False,
+         use_selection=False, object_filter=None, use_apply_transform=True, use_keyframes=True,
+         use_hierarchy=False, use_collection=False, global_matrix=None, use_cursor=False):
     """Save the Blender scene to a 3ds file."""
 
     # Time the export
     duration = time.time()
     context.window.cursor_set('WAIT')
-
     scene = context.scene
     layer = context.view_layer
     depsgraph = context.evaluated_depsgraph_get()
+    items = scene.objects
     world = scene.world
 
     unit_measure = 1.0
@@ -1595,6 +1596,13 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
             unit_measure = 1000000
 
     mtx_scale = mathutils.Matrix.Scale((scale_factor * unit_measure),4)
+
+    if use_collection:
+        items = layer.active_layer_collection.collection.all_objects
+    elif collection:
+        item_collection = bpy.data.collections.get(collection)
+        if item_collection:
+            items = item_collection.all_objects
 
     if global_matrix is None:
         global_matrix = mathutils.Matrix()
@@ -1627,13 +1635,23 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
     # Make a list of all materials used in the selected meshes (use dictionary, each material is added once)
     materialDict = {}
     mesh_objects = []
+    free_objects = []
+
+    if object_filter is None:
+        object_filter = {'WORLD', 'MESH', 'LIGHT', 'CAMERA', 'EMPTY', 'OTHER'}
+
+    if 'OTHER' in object_filter:
+        object_filter.remove('OTHER')
+        object_filter.update(DUMMYS)
+        object_filter.update(OTHERS)
+        EMPTYS.update(DUMMYS)
 
     if use_selection:
-        objects = [ob for ob in scene.objects if ob.type in object_filter and ob.visible_get(view_layer=layer) and ob.select_get(view_layer=layer)]
+        objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer) and ob.select_get(view_layer=layer)]
     else:
-        objects = [ob for ob in scene.objects if ob.type in object_filter and ob.visible_get(view_layer=layer)]
+        objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer)]
 
-    empty_objects = [ob for ob in objects if ob.type == 'EMPTY']
+    empty_objects = [ob for ob in objects if ob.type in EMPTYS]
     light_objects = [ob for ob in objects if ob.type == 'LIGHT']
     camera_objects = [ob for ob in objects if ob.type == 'CAMERA']
 
@@ -1641,7 +1659,6 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
         # Get derived objects
         derived_dict = bpy_extras.io_utils.create_derived_objects(depsgraph, [ob])
         derived = derived_dict.get(ob)
-
         if derived is None:
             continue
 
@@ -1649,15 +1666,19 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
             if ob.type not in {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}:
                 continue
 
-            try:
-                data = ob_derived.to_mesh()
-            except:
-                data = None
+            if ob_derived.type in OTHERS:
+                item = ob_derived.evaluated_get(depsgraph)
+                data = bpy.data.meshes.new_from_object(item, preserve_all_data_layers=True, depsgraph=depsgraph)
+                free_objects.append(data)
+            else:
+                try:
+                    data = ob_derived.to_mesh()
+                except:
+                    data = None
 
             if data:
-                matrix = global_matrix @ mtx
-                data.transform(matrix)
-                data.transform(mtx_scale)
+                matrix = mtx @ global_matrix if use_apply_transform else global_matrix
+                data.transform(mtx_scale @ matrix)
                 mesh_objects.append((ob_derived, data, matrix))
                 ma_ls = data.materials
                 ma_ls_len = len(ma_ls)
@@ -1725,6 +1746,7 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
             bgmixer = 'BACKGROUND', 'MIX', 'MIX_RGB'
             bgshade = 'ADD_SHADER', 'MIX_SHADER', 'OUTPUT_WORLD'
             bg_tex = 'TEX_IMAGE', 'TEX_ENVIRONMENT'
+            bg_cue = 'BACKGROUND', 'EMISSION', 'MIX', 'MIX_RGB', 'MIX_SHADER'
             bg_color = next((lk.from_node.inputs[0].default_value[:3] for lk in ntree if lk.from_node.type == bgtype and lk.to_node.type in bgshade), world.color)
             bg_mixer = next((lk.from_node.type for lk in ntree if  lk.from_node.type in bgmixer and lk.to_node.type == bgtype), bgtype)
             bg_image = next((lk.from_node.image for lk in ntree if lk.from_node.type in bg_tex and lk.to_node.type == bg_mixer), False)
@@ -1744,13 +1766,13 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
                 background_flag = _3ds_chunk(USE_VGRADIENT)
                 gradient_chunk.add_variable("midpoint", _3ds_float(gradient[1].position))
                 gradient_topcolor_chunk = _3ds_chunk(RGB)
-                gradient_topcolor_chunk.add_variable("color", _3ds_float_color(gradient[2].color[:3]))
+                gradient_topcolor_chunk.add_variable("color", _3ds_float_color(gradient[0].color[:3]))
                 gradient_chunk.add_subchunk(gradient_topcolor_chunk)
                 gradient_midcolor_chunk = _3ds_chunk(RGB)
                 gradient_midcolor_chunk.add_variable("color", _3ds_float_color(gradient[1].color[:3]))
                 gradient_chunk.add_subchunk(gradient_midcolor_chunk)
                 gradient_lowcolor_chunk = _3ds_chunk(RGB)
-                gradient_lowcolor_chunk.add_variable("color", _3ds_float_color(gradient[0].color[:3]))
+                gradient_lowcolor_chunk.add_variable("color", _3ds_float_color(gradient[2].color[:3]))
                 gradient_chunk.add_subchunk(gradient_lowcolor_chunk)
                 object_info.add_subchunk(gradient_chunk)
             object_info.add_subchunk(background_flag)
@@ -1760,7 +1782,7 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
             if fognode:
                 fog_chunk = _3ds_chunk(FOG)
                 fog_color_chunk = _3ds_chunk(RGB)
-                use_fog_flag = _3ds_chunk(USE_FOG)
+                use_atmo_flag = _3ds_chunk(USE_FOG)
                 fog_density = fognode.inputs['Density'].default_value * 100
                 fog_color_chunk.add_variable("color", _3ds_float_color(fognode.inputs[0].default_value[:3]))
                 fog_chunk.add_variable("nearplane", _3ds_float(world.mist_settings.start))
@@ -1780,7 +1802,7 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
                     layerfog_flag |= 0x2
                 layerfog_chunk = _3ds_chunk(LAYER_FOG)
                 layerfog_color_chunk = _3ds_chunk(RGB)
-                use_fog_flag = _3ds_chunk(USE_LAYER_FOG)
+                use_atmo_flag = _3ds_chunk(USE_LAYER_FOG)
                 layerfog_color_chunk.add_variable("color", _3ds_float_color(foglayer.inputs[0].default_value[:3]))
                 layerfog_chunk.add_variable("lowZ", _3ds_float(world.mist_settings.start))
                 layerfog_chunk.add_variable("highZ", _3ds_float(world.mist_settings.height))
@@ -1788,8 +1810,19 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
                 layerfog_chunk.add_variable("flags", _3ds_uint(layerfog_flag))
                 layerfog_chunk.add_subchunk(layerfog_color_chunk)
                 object_info.add_subchunk(layerfog_chunk)
-            if fognode or foglayer and layer.use_pass_mist:
-                object_info.add_subchunk(use_fog_flag)
+
+            # Add DISTANCE CUE
+            distcue = next((lk.from_socket.node for lk in ntree if lk.from_socket.node.type == 'MAP_RANGE' and lk.to_socket.node.type in bg_cue), False)
+            if distcue:
+                distance_cue_chunk = _3ds_chunk(DISTANCE_CUE)
+                use_atmo_flag = _3ds_chunk(USE_DISTANCE_CUE)
+                distance_cue_chunk.add_variable("nearcue", _3ds_float(distcue.inputs[1].default_value))
+                distance_cue_chunk.add_variable("neardim", _3ds_float(distcue.inputs[2].default_value))
+                distance_cue_chunk.add_variable("farcue", _3ds_float(distcue.inputs[4].default_value))
+                distance_cue_chunk.add_variable("fardim", _3ds_float(distcue.inputs[3].default_value))
+                object_info.add_subchunk(distance_cue_chunk)
+            if fognode or foglayer or distcue and layer.use_pass_mist:
+                object_info.add_subchunk(use_atmo_flag)
         if use_keyframes and world.animation_data or (world.node_tree and world.node_tree.animation_data):
             kfdata.add_subchunk(make_ambient_node(world))
 
@@ -1860,15 +1893,15 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
             operator.report({'WARNING'}, "Object %r can't be written into a 3DS file")
 
         # Export object node
-        if use_keyframes:
-            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id))
+        if use_keyframes and not use_hierarchy:
+            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id, use_apply_transform))
 
         i += i
 
     # Create chunks for all empties - only requires a object node
-    if use_keyframes:
+    if use_keyframes and not use_hierarchy:
         for ob in empty_objects:
-            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id))
+            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id, use_apply_transform))
 
     # Create light object chunks
     for ob in light_objects:
@@ -1957,7 +1990,7 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
 
         # Export light and spotlight target node
         if use_keyframes:
-            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id))
+            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id, use_apply_transform))
             if ob.data.type == 'SPOT':
                 kfdata.add_subchunk(make_target_node(ob, translation, rotation, scale, name_id))
 
@@ -1994,7 +2027,7 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
 
         # Export camera and target node
         if use_keyframes:
-            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id))
+            kfdata.add_subchunk(make_object_node(ob, translation, rotation, scale, name_id, use_apply_transform))
             kfdata.add_subchunk(make_target_node(ob, translation, rotation, scale, name_id))
 
     # Add main object info chunk to primary chunk
@@ -2016,9 +2049,14 @@ def save(operator, context, filepath="", scale_factor=1.0, use_scene_unit=False,
     # Close the file
     file.close()
 
+    # Remove free objects
+    for free in free_objects:
+        bpy.data.meshes.remove(free)
+
     # Clear name mapping vars, could make locals too
     del name_unique[:]
     name_mapping.clear()
+    free_objects.clear()
 
     # Debugging only: report the exporting time
     context.window.cursor_set('DEFAULT')
