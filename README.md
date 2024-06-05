@@ -11,7 +11,7 @@
 > * `.3ds`
 > * `.max`  
 > 
-> **Authors**  
+> **Author**  
 > * Sebastian Schrand 
 > 
 > **Maintainer**  
