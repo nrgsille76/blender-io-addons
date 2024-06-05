@@ -53,11 +53,13 @@ FLOAT_POINT = 0x71F11549498702E7  # Float Wire
 MATRIX_POS = 0xFFEE238A118F7E02  # Position XYZ
 MATRIX_ROT = 0x3A90416731381913  # Rotation Wire
 MATRIX_SCL = 0xFEEE238B118F7C01  # Scale XYZ
+BIPED_OBJ = 0x0000000000009125  # Biped Object
 EDIT_MESH = 0x00000000E44F10B3  # Editable Mesh
 EDIT_POLY = 0x192F60981BF8338D  # Editable Poly
 CORO_MTL = 0x448931dd70be6506  # CoronaMtl
 ARCH_MTL = 0x4A16365470B05735  # ArchMtl
 VRAY_MTL = 0x7034695C37BF3F2F  # VRayMtl
+DUMMY = 0x0000000000876234  # Dummy
 
 SKIPPABLE = {
     0x0000000000001002: 'Camera',
@@ -69,8 +71,6 @@ SKIPPABLE = {
     0x0000000000001097: 'Ellipse',
     0x0000000000001999: 'Circle',
     0x0000000000002013: 'Point',
-    0x0000000000009125: 'Biped Object',
-    0x0000000000876234: 'Dummy',
     0x05622B0D69011E82: 'Compass',
     0x12A822FB76A11646: 'CV Surface',
     0x1EB3430074F93B07: 'Particle View',
@@ -88,6 +88,11 @@ DLL_DIR_LIST = []
 CLS_DIR3_LIST = []
 VID_PST_QUE = []
 SCENE_LIST = []
+
+object_list = []
+object_dict = {}
+parent_dict = {}
+matrix_dict = {}
 
 
 def get_valid_name(name):
@@ -586,7 +591,7 @@ class ByteArrayChunk(MaxChunk):
             self.set_string(data)
         elif (self.types in [0x2034, 0x2035]):
             self.set(data, '<' + 'I' * int(len(data) / 4), 0, len(data))
-        elif (self.types in [0x2501, 0x2503, 0x2504, 0x2505, 0x2511]):
+        elif (self.types in [0x2501, 0x2503, 0x2504, 0x2505, 0x2511, 0x96A]):
             self.set(data, '<' + 'f' * int(len(data) / 4), 0, len(data))
         elif (self.types == 0x2510):
             self.set(data, '<' + 'f' * int(len(data) / 4 - 1) + 'I', 0, len(data))
@@ -654,7 +659,6 @@ class SceneChunk(ContainerChunk):
     def __init__(self, types, data, level, number, primReader=ByteArrayChunk):
         MaxChunk.__init__(self, types, data, level, number)
         self.primReader = primReader
-        self.matrix = None
 
     def __str__(self):
         return "%s[%4x]%s" % ("" * self.level, self.number, get_cls_name(self))
@@ -872,6 +876,50 @@ def read_video_postqueue(maxfile, filename):
     VID_PST_QUE = read_chunks(maxfile, 'VideoPostQueue', filename + '.VidPstQue.bin')
 
 
+def calc_point(data):
+    points = []
+    long, offset = get_long(data, 0)
+    while (offset < len(data)):
+        val, offset = get_long(data, offset)
+        flt, offset = get_floats(data, offset, 3)
+        points.extend(flt)
+    return points
+
+
+def calc_point_float(data):
+    points = []
+    long, offset = get_long(data, 0)
+    while (offset < len(data)):
+        flt, offset = get_floats(data, offset, 3)
+        points.extend(flt)
+    return points
+
+
+def calc_point_3d(chunk):
+    data = chunk.data
+    count, offset = get_long(data, 0)
+    pointlist = []
+    try:
+        while (offset < len(data)):
+            pt = Point3d()
+            long, offset = get_long(data, offset)
+            pt.points, offset = get_longs(data, offset, long)
+            pt.flags, offset = get_short(data, offset)
+            if ((pt.flags & 0x01) != 0):
+                pt.f1, offset = get_long(data, offset)
+            if ((pt.flags & 0x08) != 0):
+                pt.fH, offset = get_short(data, offset)
+            if ((pt.flags & 0x10) != 0):
+                pt.f2, offset = get_long(data, offset)
+            if ((pt.flags & 0x20) != 0):
+                pt.fA, offset = get_longs(data, offset, 2 * (long - 3))
+            if (len(pt.points) > 0):
+                pointlist.append(pt)
+    except Exception as exc:
+        print('ArrayError:\n', "%s: offset = %d\n" % (exc, offset))
+    return pointlist
+
+
 def get_point(floatval, default=0.0):
     uid = get_guid(floatval)
     if (uid == 0x2007):  # Bezier-Float
@@ -900,105 +948,61 @@ def get_point_3d(chunk, default=0.0):
     return floats
 
 
-def get_position(pos):
-    position = None
-    mtx = mathutils.Matrix.Identity(4)
-    if (pos):
-        uid = get_guid(pos)
-        if (uid == MATRIX_POS):  # Position XYZ
-            position = get_point_3d(pos)
-        elif (uid == 0x442312):  # TCB Position
-            position = pos.get_first(0x2503).data
-        elif (uid == 0x2008):  # Bezier Position
-            position = pos.get_first(0x2503).data
-        if (position):
-            mtx = mathutils.Matrix.Translation(position)
-    return mtx
+def get_point_array(values):
+    verts = []
+    if len(values) >= 4:
+        count, offset = get_long(values, 0)
+        while (count > 0):
+            floats, offset = get_floats(values, offset, 3)
+            verts.extend(floats)
+            count -= 1
+    return verts
 
 
-def get_rotation(pos):
-    rotation = None
-    mtx = mathutils.Matrix.Identity(4)
-    if (pos):
-        uid = get_guid(pos)
-        if (uid == 0x2012):  # Euler XYZ
-            rot = get_point_3d(pos)
-            rotation = mathutils.Euler((rot[0], rot[1], rot[2])).to_quaternion()
-        elif (uid == 0x442313):  # TCB Rotation
-            rot = pos.get_first(0x2504).data
-            rotation = mathutils.Quaternion((rot[0], rot[1], rot[2], rot[3]))
-        elif (uid == 0x4B4B1003):  # Rotation List
-            refs = get_references(pos)
-            if (len(refs) > 3):
-                return get_rotation(refs[0])
-        elif (uid == MATRIX_ROT):  # Rotation Wire
-            return get_rotation(get_references(pos)[0])
-        if (rotation):
-            mtx = mathutils.Matrix.Rotation(rotation.angle, 4, rotation.axis)
-    return mtx
+def get_poly_4p(points):
+    vertex = {}
+    for point in points:
+        ngon = point.points
+        key = point.fH
+        if (key not in vertex):
+            vertex[key] = []
+        vertex[key].append(ngon)
+    return vertex
 
 
-def get_scale(pos):
-    mtx = mathutils.Matrix.Identity(4)
-    if (pos):
-        uid = get_guid(pos)
-        if (uid == 0x2010):  # Bezier Scale
-            scale = pos.get_first(0x2501)
-            if (scale is None):
-                scale = pos.get_first(0x2505)
-            pos = scale.data
-        elif (uid == 0x442315):  # TCB Zoom
-            scale = pos.get_first(0x2501)
-            if (scale is None):
-                scale = pos.get_first(0x2505)
-            pos = scale.data
-        elif (uid == MATRIX_SCL):  # ScaleXYZ
-            pos = get_point_3d(pos, 1.0)
-        else:
-            return mtx
-        mtx = mathutils.Matrix.Diagonal(pos[:3]).to_4x4()
-    return mtx
+def get_poly_5p(data):
+    count, offset = get_long(data, 0)
+    ngons = []
+    while count > 0:
+        pt, offset = get_longs(data, offset, 3)
+        offset += 8
+        ngons.append(pt)
+        count -= 1
+    return ngons
 
 
-def create_matrix(prc):
-    mtx = mathutils.Matrix.Identity(4)
-    pos = rot = scl = None
-    uid = get_guid(prc)
-    if (uid == 0x2005):  # Position/Rotation/Scale
-        pos = get_position(get_references(prc)[0])
-        rot = get_rotation(get_references(prc)[1])
-        scl = get_scale(get_references(prc)[2])
-    elif (uid == 0x9154):  # BipSlave Control
-        biped_sub_anim = get_references(prc)[2]
-        refs = get_references(biped_sub_anim)
-        scl = get_scale(get_references(refs[1])[0])
-        rot = get_rotation(get_references(refs[2])[0])
-        pos = get_position(get_references(refs[3])[0])
-    if (pos is not None):
-        mtx = pos @ mtx
-    if (rot is not None):
-        mtx = rot @ mtx
-    if (scl is not None):
-        mtx = scl @ mtx
-    return mtx
+def get_poly_6p(data):
+    count, offset = get_long(data, 0)
+    polylist = []
+    while (offset < len(data)):
+        long, offset = get_longs(data, offset, 6)
+        i = 5
+        while ((i > 3) and (long[i] < 0)):
+            i -= 1
+            if (i > 2):
+                polylist.append(long[1:i])
+    return polylist
 
 
-def get_matrix_mesh_material(node):
-    refs = get_reference(node)
-    if (refs):
-        prs = refs.get(0, None)
-        msh = refs.get(1, None)
-        mat = refs.get(3, None)
-        lyr = refs.get(6, None)
-    else:
-        refs = get_references(node)
-        prs = refs[0]
-        msh = refs[1]
-        mat = refs[3]
-        lyr = None
-        if (len(refs) > 6):
-            lyr = refs[6]
-    return prs, msh, mat, lyr
+def get_poly_data(chunk):
+    offset = 0
+    polylist = []
+    data = chunk.data
+    while (offset < len(data)):
+        count, offset = get_long(data, offset)
+        points, offset = get_longs(data, offset, count)
+        polylist.append(points)
+    return polylist
 
 
 def get_property(properties, idx):
@@ -1128,6 +1132,111 @@ def adjust_material(obj, mat):
             matShader.ior = material.get('refraction', 1.45)
 
 
+def get_bezier_floats(pos):
+    refs = get_references(pos)
+    floats = get_point_3d(pos)
+    if any(rf.get_first(0x2501) for rf in refs):
+        floats.clear()
+        for ref in refs:
+            floats.append(ref.get_first(0x2501).data[0])
+    return floats
+
+
+def get_position(pos):
+    position = mathutils.Vector()
+    if (pos):
+        uid = get_guid(pos)
+        if (uid == MATRIX_POS):  # Position XYZ
+            position = mathutils.Vector(get_bezier_floats(pos))
+        elif (uid == 0x2008):  # Bezier Position
+            position = mathutils.Vector(pos.get_first(0x2503).data)
+        elif (uid == 0x442312):  # TCB Position
+            position = mathutils.Vector(pos.get_first(0x2503).data)
+        elif (uid == 0x4B4B1002):  # Position List
+            refs = get_references(pos)
+            if (len(refs) >= 3):
+                return get_position(refs[0])
+    return position
+
+
+def get_rotation(pos):
+    rotation = mathutils.Quaternion()
+    if (pos):
+        uid = get_guid(pos)
+        if (uid == 0x2012):  # Euler XYZ
+            rot = get_bezier_floats(pos)
+            rotation = mathutils.Euler((rot[0], rot[1], rot[2])).to_quaternion()
+        elif (uid == 0x442313):  # TCB Rotation
+            rot = pos.get_first(0x2504).data
+            rotation = mathutils.Quaternion((rot[0], rot[1], rot[2], rot[3]))
+        elif (uid == MATRIX_ROT):  # Rotation Wire
+            return get_rotation(get_references(pos)[0])
+        elif (uid == 0x4B4B1003):  # Rotation List
+            refs = get_references(pos)
+            if (len(refs) > 3):
+                return get_rotation(refs[0])
+    return rotation
+
+
+def get_scale(pos):
+    scale = mathutils.Vector((1.0, 1.0, 1.0))
+    if (pos):
+        uid = get_guid(pos)
+        if (uid == MATRIX_SCL):  # ScaleXYZ
+            pos = get_bezier_floats(pos[:3])
+        elif (uid == 0x2010):  # Bezier Scale
+            scl = pos.get_first(0x2501)
+            if (scl is None):
+                scl = pos.get_first(0x2505)
+            pos = scl.data
+        elif (uid == 0x442315):  # TCB Zoom
+            scl = pos.get_first(0x2501)
+            if (scl is None):
+                scl = pos.get_first(0x2505)
+            pos = scl.data
+        elif (uid == 0x4B4B1002):  # Scale List
+            refs = get_references(pos)
+            if (len(refs) >= 3):
+                return get_scale(refs[0])
+        scale = mathutils.Vector(pos[:3])
+    return scale
+
+
+def create_matrix(prc):
+    uid = get_guid(prc)
+    mtx = mathutils.Matrix.Identity(4)
+    if (uid == 0x2005):  # Position/Rotation/Scale
+        pos = get_position(get_references(prc)[0])
+        rot = get_rotation(get_references(prc)[1])
+        scl = get_scale(get_references(prc)[2])
+        mtx = mathutils.Matrix.LocRotScale(pos, rot, scl)
+    elif (uid == 0x9154):  # BipSlave Control
+        biped = get_references(prc)[-1]
+        if (get_cls_name(biped) == "'Biped SubAnim '"):
+            ref = get_references(biped)
+            scl = get_scale(get_references(ref[1])[0])
+            rot = get_rotation(get_references(ref[2])[0])
+            pos = get_position(get_references(ref[3])[0])
+            mtx = mathutils.Matrix.LocRotScale(pos, rot, scl)
+    return mtx
+
+
+def get_matrix_mesh_material(node):
+    refs = get_reference(node)
+    if (refs):
+        prs = refs.get(0, None)
+        msh = refs.get(1, None)
+        mat = refs.get(3, None)
+        lyr = refs.get(6, None)
+    else:
+        refs = get_references(node)
+        prs = refs[0]
+        msh = refs[1]
+        mat = refs[3]
+        lyr = refs[6] if len(refs) > 6 else None
+    return prs, msh, mat, lyr
+
+
 def adjust_matrix(obj, node):
     mtx = create_matrix(node).flatten()
     plc = mathutils.Matrix(*mtx)
@@ -1171,191 +1280,109 @@ def create_shape(context, pts, indices, node, key, mtx, mat, umt):
     return True
 
 
-def calc_point(data):
-    points = []
-    long, offset = get_long(data, 0)
-    while (offset < len(data)):
-        val, offset = get_long(data, offset)
-        flt, offset = get_floats(data, offset, 3)
-        points.extend(flt)
-    return points
+def create_dummy_object(context, node, uid):
+    dummy = bpy.data.objects.new(get_node_name(node), None)
+    dummy.empty_display_type = 'SINGLE_ARROW' if uid == BIPED_OBJ else 'PLAIN_AXES'
+    context.view_layer.active_layer_collection.collection.objects.link(dummy)
+    return dummy
 
 
-def calc_point_float(data):
-    points = []
-    long, offset = get_long(data, 0)
-    while (offset < len(data)):
-        flt, offset = get_floats(data, offset, 3)
-        points.extend(flt)
-    return points
-
-
-def calc_point_3d(chunk):
-    data = chunk.data
-    count, offset = get_long(data, 0)
-    pointlist = []
-    try:
-        while (offset < len(data)):
-            pt = Point3d()
-            long, offset = get_long(data, offset)
-            pt.points, offset = get_longs(data, offset, long)
-            pt.flags, offset = get_short(data, offset)
-            if ((pt.flags & 0x01) != 0):
-                pt.f1, offset = get_long(data, offset)
-            if ((pt.flags & 0x08) != 0):
-                pt.fH, offset = get_short(data, offset)
-            if ((pt.flags & 0x10) != 0):
-                pt.f2, offset = get_long(data, offset)
-            if ((pt.flags & 0x20) != 0):
-                pt.fA, offset = get_longs(data, offset, 2 * (long - 3))
-            if (len(pt.points) > 0):
-                pointlist.append(pt)
-    except Exception as exc:
-        print('ArrayError:\n', "%s: offset = %d\n" % (exc, offset))
-    return pointlist
-
-
-def get_point_array(values):
-    verts = []
-    if len(values) >= 4:
-        count, offset = get_long(values, 0)
-        while (count > 0):
-            floats, offset = get_floats(values, offset, 3)
-            verts.extend(floats)
-            count -= 1
-    return verts
-
-
-def get_poly_4p(points):
-    vertex = {}
-    for point in points:
-        ngon = point.points
-        key = point.fH
-        if (key not in vertex):
-            vertex[key] = []
-        vertex[key].append(ngon)
-    return vertex
-
-
-def get_poly_5p(data):
-    count, offset = get_long(data, 0)
-    ngons = []
-    while count > 0:
-        pt, offset = get_longs(data, offset, 3)
-        offset += 8
-        ngons.append(pt)
-        count -= 1
-    return ngons
-
-
-def get_poly_6p(data):
-    count, offset = get_long(data, 0)
-    polylist = []
-    while (offset < len(data)):
-        long, offset = get_longs(data, offset, 6)
-        i = 5
-        while ((i > 3) and (long[i] < 0)):
-            i -= 1
-            if (i > 2):
-                polylist.append(long[1:i])
-    return polylist
-
-
-def get_poly_data(chunk):
-    offset = 0
-    polylist = []
-    data = chunk.data
-    while (offset < len(data)):
-        count, offset = get_long(data, offset)
-        points, offset = get_longs(data, offset, count)
-        polylist.append(points)
-    return polylist
-
-
-def create_editable_poly(context, node, msh, mat, mtx, umt, uvm):
-    coords = point4i = point6i = pointNi = None
+def create_editable_poly(context, node, msh, mat, obtypes):
+    point3i = point4i = point6i = pointNi = None
+    point = key = uvdata = None
     poly = msh.get_first(0x08FE)
-    created = False
-    lidx = []
-    lcrd = []
-    lply = []
+    created = []
+    uvmap = []  # UVW maps
+    coord = []  # UVW coords
+    uvwid = []  # UVW indices
     if (poly):
         for child in poly.children:
-            if (child.types == 0x0100):
-                coords = calc_point(child.data)
+            if isinstance(child.data, tuple):
+                created = create_shape(context, node, key, coord, uvwid, uvdata, mat, obtypes)
+            elif (child.types == 0x0100):
+                point = calc_point(child.data)
+            elif (child.types == 0x0310):
+                pointNi = child.data
             elif (child.types == 0x0108):
                 point6i = child.data
             elif (child.types == 0x011A):
                 point4i = calc_point_3d(child)
-            elif (child.types == 0x0310):
-                pointNi = child.data
+            elif (child.types == 0x010A):
+                point3i = calc_point_float(child.data)
             elif (child.types == 0x0124):
-                lidx.append(get_long(child.data, 0)[0])
+                uvmap.append(get_long(child.data, 0)[0])
             elif (child.types == 0x0128):
-                lcrd.append(calc_point_float(child.data))
+                coord += calc_point_float(child.data)
             elif (child.types == 0x012B):
-                lply.append(get_poly_data(child))
+                uvwid += get_poly_data(child)
+        if (point3i is not None) and not coord:
+            coord += point3i
+        uvdata = uvmap, coord, uvwid
         if (point4i is not None):
             vertex = get_poly_4p(point4i)
             if (len(vertex) > 0):
-                for key, ngons in vertex.items():
-                    created |= create_shape(context, coords, ngons,
-                                            node, key, mtx, mat, umt)
-            else:
-                created = True
+                for key, quads in vertex.items():
+                    created += create_shape(context, node, key, point,
+                                            quads, uvdata, mat, obtypes)
         elif (point6i is not None):
             ngons = get_poly_6p(point6i)
-            created = create_shape(context, coords, ngons, node,
-                                   None, mtx, mat, umt)
+            created += create_shape(context, node, key, point,
+                                    ngons, uvdata, mat, obtypes)
         elif (pointNi is not None):
             ngons = get_poly_5p(pointNi)
-            created = create_shape(context, coords, ngons, node,
-                                   None, mtx, mat, umt)
-        if (uvm and len(lidx) > 0):
-            for i in range(len(lidx)):
-                created |= create_shape(context, lcrd[i], lply[i],
-                                        node, lidx[i], mtx, mat, umt)
+            created += create_shape(context, node, key, point,
+                                    ngons, uvdata, mat, obtypes)
+        if (point3i is not None) and 'UV' not in obtypes:
+            created += create_shape(context, node, key, point3i,
+                                    uvwid, uvdata, mat, obtypes)
     return created
 
 
-def create_editable_mesh(context, node, msh, mat, mtx, umt):
+def create_editable_mesh(context, node, msh, mat, obtypes):
+    key = uvdata = None
     poly = msh.get_first(0x08FE)
-    created = False
+    created = []
     if (poly):
         vertex_chunk = poly.get_first(0x0914)
         clsid_chunk = poly.get_first(0x0912)
-        coords = get_point_array(vertex_chunk.data)
+        points = get_point_array(vertex_chunk.data)
         ngons = get_poly_5p(clsid_chunk.data)
-        created = create_shape(context, coords, ngons, node, None, mtx, mat, umt)
+        created += create_shape(context, node, key, points, ngons, uvdata, mat, obtypes)
     return created
 
 
-def create_shell(context, node, shell, mat, mtx, umt, uvm):
+def create_shell(context, node, shell, mat, obtypes):
     refs = get_references(shell)
-    msh = refs[-1]
-    if (get_cls_name(msh) == "'Editable Poly'"):
-        created = create_editable_poly(context, node, msh, mat, mtx, umt, uvm)
-    else:
-        created = create_editable_mesh(context, node, msh, mat, mtx, umt)
+    created = []
+    if refs:
+        msh = refs[-1]
+        if (get_guid(msh) == EDIT_POLY):
+            created += create_editable_poly(context, node, msh, mat, obtypes)
+        else:
+            created += create_editable_mesh(context, node, msh, mat, obtypes)
     return created
 
 
 def create_skipable(context, node, skip):
     name = node.get_first(TYP_NAME).data
     print("    skipping %s '%s'... " % (skip, name))
-    return True
+    return []
 
 
-def create_mesh(context, node, msh, mtx, mat, umt, uvm):
-    created = False
+def create_mesh(context, node, msh, mat, obtypes):
+    created = []
+    object_list.clear()
     uid = get_guid(msh)
-    msh.geometry = None
     if (uid == EDIT_MESH):
-        created = create_editable_mesh(context, node, msh, mat, mtx, umt)
+        created = create_editable_mesh(context, node, msh, mat, obtypes)
     elif (uid == EDIT_POLY):
-        created = create_editable_poly(context, node, msh, mat, mtx, umt, uvm)
+        created = create_editable_poly(context, node, msh, mat, obtypes)
     elif (uid in {0x2032, 0x2033}):
-        created = create_shell(context, node, msh, mat, mtx, umt, uvm)
+        created = create_shell(context, node, msh, mat, obtypes)
+    elif (uid == DUMMY and 'EMPTY' in obtypes):
+        created = [create_dummy_object(context, node, uid)]
+    elif (uid == BIPED_OBJ and 'ARMATURE' in obtypes):
+        created = [create_dummy_object(context, node, uid)]
     else:
         skip = SKIPPABLE.get(uid)
         if (skip is not None):
@@ -1363,39 +1390,63 @@ def create_mesh(context, node, msh, mtx, mat, umt, uvm):
     return created, uid
 
 
-def create_object(context, node, mscale, usemat, uvmesh, transform):
+def create_object(context, node, obtypes):
     parent = get_node_parent(node)
-    node.parent = parent
+    nodename = get_node_name(node)
+    parentname = get_node_name(parent)
+    nodepivot = node.get_first(0x96A)
     prs, msh, mat, lyr = get_matrix_mesh_material(node)
-    while ((parent is not None) and (get_guid(parent) != 0x02)):
-        parent_mtx = parent.matrix
-        if (parent_mtx):
-            prs = prs.dot(parent_mtx)
-        parent = get_node_parent(parent)
-    if (transform):
-        mtx = create_matrix(prs) @ mscale
-    else:
-        mtx = mscale
-    created, uid = create_mesh(context, node, msh, mtx, mat, usemat, uvmesh)
+    created, uid = create_mesh(context, node, msh, mat, obtypes)
+    created = [idx for ob, idx in enumerate(created) if idx not in created[:ob]]
+    for obj in created:
+        if obj.name != nodename:
+            parent_dict[obj.name] = parentname
+        if nodepivot and obj.type == 'MESH':
+            pivot = mathutils.Vector(nodepivot.data)
+            p_mtx = mathutils.Matrix.Translation(pivot)
+            obj.data.transform(p_mtx)
+    matrix_dict[nodename] = create_matrix(prs)
+    parent_dict[nodename] = parentname
+
+    return nodename, created
 
 
-def make_scene(context, mscale, usemat, uvmesh, transform, parent):
+def make_scene(context, mscale, obtypes, transform, parent):
+    imported = []
     for chunk in parent.children:
-        if (isinstance(chunk, SceneChunk)):
-            if ((get_guid(chunk) == 0x01) and (get_super_id(chunk) == 0x01)):
+        if isinstance(chunk, SceneChunk) and get_guid(chunk) == 0x1 and get_super_id(chunk) == 0x1:
+            try:
+                imported.append(create_object(context, chunk, obtypes))
+            except Exception as exc:
+                print("\tImportError:", exc, chunk, get_node_name(chunk))
+
+    # Apply matrix and assign parents to objects
+    objects = dict(imported)
+    for idx, objs in objects.items():
+        pt_name = parent_dict.get(idx)
+        parents = objects.get(pt_name)
+        obj_mtx = matrix_dict.get(idx, mathutils.Matrix())
+        prt_mtx = matrix_dict.get(pt_name, mathutils.Matrix())
+        for obj in objs:
+            if parents:
                 try:
-                    create_object(context, chunk, mscale, usemat, uvmesh, transform)
-                except Exception as exc:
-                    print('ImportError:', exc, chunk)
+                    obj.parent = parents[0]
+                except TypeError as te:
+                    print("\tTypeError: %s '%s'" % (te, pt_name))
+            if obj_mtx:
+                trans_mtx = prt_mtx @ obj_mtx
+                if transform:
+                    obj.matrix_world = trans_mtx
+                obj.matrix_world = mscale @ obj.matrix_world
 
 
-def read_scene(context, maxfile, filename, mscale, usemat, uvmesh, transform):
+def read_scene(context, maxfile, filename, mscale, obtypes, transform):
     global SCENE_LIST
     SCENE_LIST = read_chunks(maxfile, 'Scene', filename + '.Scn.bin', conReader=SceneChunk)
-    make_scene(context, mscale, usemat, uvmesh, transform, SCENE_LIST[0])
+    make_scene(context, mscale, obtypes, transform, SCENE_LIST[0])
 
 
-def read(context, filename, mscale, usemat, uvmesh, transform):
+def read(context, filename, mscale, obtypes, transform):
     if (is_maxfile(filename)):
         maxfile = ImportMaxFile(filename)
         read_class_data(maxfile, filename)
@@ -1403,17 +1454,25 @@ def read(context, filename, mscale, usemat, uvmesh, transform):
         read_directory(maxfile, filename)
         read_class_directory(maxfile, filename)
         read_video_postqueue(maxfile, filename)
-        read_scene(context, maxfile, filename, mscale, usemat, uvmesh, transform)
+        read_scene(context, maxfile, filename, mscale, obtypes, transform)
     else:
         print("File seems to be no 3D Studio Max file!")
 
 
-def load(operator, context, files=None, directory="", filepath="", scale_objects=1.0, use_material=True,
-         use_uv_mesh=False, use_collection=False, use_apply_matrix=False, global_matrix=None):
+def load(operator, context, files=None, directory="", filepath="", scale_objects=1.0,
+         use_collection=False, object_filter=None, use_apply_matrix=True, global_matrix=None):
+
+    object_dict.clear()
+    parent_dict.clear()
+    matrix_dict.clear()
+
     context.window.cursor_set('WAIT')
     mscale = mathutils.Matrix.Scale(scale_objects, 4)
     if global_matrix is not None:
         mscale = global_matrix @ mscale
+
+    if not object_filter:
+        object_filter = {'MATERIAL', 'UV', 'EMPTY'}
 
     default_layer = context.view_layer.active_layer_collection.collection
     for fl in files:
@@ -1421,7 +1480,11 @@ def load(operator, context, files=None, directory="", filepath="", scale_objects
             collection = bpy.data.collections.new(fl.name.split(".")[0])
             context.scene.collection.children.link(collection)
             context.view_layer.active_layer_collection = context.view_layer.layer_collection.children[collection.name]
-        read(context, os.path.join(directory, fl.name), mscale, usemat=use_material, uvmesh=use_uv_mesh, transform=use_apply_matrix)
+        read(context, os.path.join(directory, fl.name), mscale, obtypes=object_filter, transform=use_apply_matrix)
+
+    object_dict.clear()
+    parent_dict.clear()
+    matrix_dict.clear()
 
     active = context.view_layer.layer_collection.children.get(default_layer.name)
     if active is not None:
