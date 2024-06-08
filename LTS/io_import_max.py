@@ -36,6 +36,7 @@ from bpy.props import (
     CollectionProperty,
 )
 from pathlib import Path
+from bpy_extras.image_utils import load_image
 from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 
 
