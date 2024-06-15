@@ -1195,25 +1195,27 @@ def get_arch_material(ad):
 
 def adjust_material(filename, search, obj, mat):
     dirname = os.path.dirname(filename)
-    material = mtl_id = None
+    material = None
     if (mat is not None):
         uid = get_guid(mat)
+        mtl_id = mat.get_first(0x4000)
+        tex_id = mat.get_first(0x21B0)
         if (uid == 0x0002):  # Standard
             refs = get_references(mat)
-            mtl_id = mat.get_first(0x4000)
             material = get_standard_material(refs)
         elif (uid == 0x0200):  # Multi/Sub-Object
             refs = get_references(mat)
             material = adjust_material(filename, search, obj, refs[-1])
         elif (uid == VRAY_MTL):  # VRayMtl
-            refs = get_reference(mat)
             mtl_id = mat.get_first(0x5431)
+            refs = get_reference(mat)
             material = get_vray_material(refs)
         elif (uid == CORO_MTL):  # CoronaMtl
             refs = get_references(mat)
             mtl_id = mat.get_first(0x0FA0)
-            material = get_corona_material(refs[0])
-        if (uid == ARCH_MTL):  # Arch
+            texrefs = get_references(refs[0])
+            material = get_corona_material(refs)
+        elif (uid == ARCH_MTL):  # Arch
             refs = get_references(mat)
             material = get_arch_material(refs[0])
         if (obj is not None) and (material is not None):
