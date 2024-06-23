@@ -1457,6 +1457,7 @@ def adjust_material(filename, search, obj, mat):
             matShader.metallic = objMaterial.metallic = material.get('metallic', 0)
             matShader.emission_color = material.get('emissive', (0, 0, 0))
             matShader.ior = material.get('refraction', 1.45)
+            matShader.emission_strength = 0.0
             if texname is not None:
                 image = load_image(texname, dirname, place_holder=False, recursive=search, check_existing=True)
                 if image is not None:
