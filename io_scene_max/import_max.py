@@ -46,9 +46,13 @@ FREESECT = 0xFFFFFFFF  # (-1) unallocated sector
 MAX_STREAM = 2  # element is a stream object
 ROOT_STORE = 5  # element is a root storage
 
-TYP_NAME = 0x0962
-INVALID_NAME = re.compile('^[0-9].*')
+TYP_VALUE = {0x100, 0x2513}
+TYP_REFS = {0x1040, 0x2034, 0x2035}
+TYP_LINK = {0x1020, 0x1030, 0x1050}
+TYP_NAME = {0x110, 0x340, 0x456, 0x962, 0x10A0, 0x1010, 0x1230, 0x4001}
+TYP_ARRAY = {0x96A, 0x96B, 0x96C, 0x2501, 0x2503, 0x2504, 0x2505, 0x2511}
 UNPACK_BOX_DATA = struct.Struct('<HIHHBff').unpack_from  # Index, int, 2short, byte, 2float
+INVALID_NAME = re.compile('^[0-9].*')
 
 FLOAT_POINT = 0x71F11549498702E7  # Float Wire
 MATRIX_POS = 0xFFEE238A118F7E02  # Position XYZ
@@ -131,6 +135,12 @@ def get_short(data, offset=0):
 def get_long(data, offset=0):
     size = offset + 4
     value = struct.unpack('<I', data[offset:size])[0]
+    return value, size
+
+
+def get_int(data, offset=0):
+    size = offset + 4
+    value = struct.unpack('<i', data[offset:size])[0]
     return value, size
 
 
@@ -553,18 +563,23 @@ class ImportMaxFile:
 # DATA PROCESSING #
 ###################
 
-class MaxChunk():
+class MaxChunk(object):
     """Representing a chunk of a .max file."""
 
-    def __init__(self, types, size, level, number):
-        self.number = number
+    __slots__ = ("types", "superid", "size", "level",
+                 "number", "data", "parent", "pre", "post")
+
+    def __init__(self, types, superid, size, level, number, data=None):
         self.types = types
-        self.level = level
-        self.parent = None
-        self.previous = None
-        self.following = None
+        self.supid = superid
         self.size = size
-        self.data = None
+        self.level = level
+        self.number = number
+        self.data = data
+        self.parent = None
+        self.pre = None
+        self.post = None
+        
 
     def __str__(self):
         return "%s[%4x]%04X:%s" % ("" * self.level, self.number, self.types, self.data)
@@ -573,8 +588,9 @@ class MaxChunk():
 class ByteArrayChunk(MaxChunk):
     """A byte array of a .max chunk."""
 
-    def __init__(self, types, data, level, number):
-        MaxChunk.__init__(self, types, data, level, number)
+    def __init__(self, types, superid, size, level, number, data):
+        MaxChunk.__init__(self, types, superid, level, number, data)
+        self.superid = superid
         self.children = []
 
     def get_first(self, types):
@@ -592,43 +608,44 @@ class ByteArrayChunk(MaxChunk):
             self.data = data.decode('UTF-16LE')
         except:
             self.data = data.decode('UTF-8', 'replace')
+        finally:
+            self.data = data.decode('UTF-16LE', 'replace')
 
     def set_meta_data(self, data):
-        metafile = {}
-        data = data.split(b'\x00\x00')
-        metadata = list(zip(*[iter(data)]*6))
-        for mdata in metadata:
-            mdata = list(mdata)
-            value = mdata.pop(0)
-            title = mdata.pop(0)
-            mbyte = mdata.pop(0)
-            mpath = mdata.pop(0)
-            drive = mdata.pop(0)
-            root = get_short(value)[0]
-            head = value.removeprefix(b'\x00')
-            meta = struct.unpack('<IQI', head[:16])
-            mkey = str(struct.unpack('>H', mbyte)[0])
-            mdir = drive.decode('UTF-8', 'replace')
-            path = mpath.decode('UTF-8').encode('UTF-32')
-            metafile[meta[1]] = path.decode('UTF-16LE', 'replace')
-            mtyp = mkey + ' ' + title.decode('UTF-8', 'replace') + ' ' + mdir
-            for idx, path in enumerate(mdata):
-                path = path.decode('UTF-8')
-                print("\tfilepath: '%s' ->  %s" % (mtyp, path))
-        self.data = metafile
+        metadict = {}
+        matkey = False
+        try:
+            metadata = list(zip(*[iter(data.split(b'\x00\x00\x00'))]*2))
+            for mdata in metadata:
+                header = mdata[0]
+                imgkey = header[-1]
+                mtitle = b''.join(mdata[1].split(b'\x00')).decode('UTF-8')
+                if (len(header) > 1):
+                    size = len(header[:-5])
+                    head = struct.unpack('<' + 'IH' * int(size / 6), header[:size])
+                    meta = get_longs(header, size, len(header[size:]) // 4)[0]
+                    print("  metadata: %s '%s'...%s" % (hex(head[-1]), imgkey, mtitle))
+                    metakey = meta[0]
+                    metadict[metakey] = [(head[0], head[1])]
+                elif metadict and metakey:
+                    metadict[metakey].insert(-imgkey, (imgkey, mtitle))
+                    print("  imgpath: %s -> '%s: %s'" % (hex(metakey), imgkey, mtitle))
+        except:
+            self.data = data
+            # print('\tStructError: %s' % exc)
+        finally:
+            self.data = metadict
 
     def set_data(self, data):
-        if (self.types in [0x110, 0x340, 0x456, 0x0962, 0x1230, 0x4001]):
+        if (self.types in TYP_NAME):
             self.set_string(data)
-        elif (self.types in [0x87DE, 0x8DB9]):
-            self.set_meta_data(data)
-        elif (self.types in [0x1020, 0x1030]):
+        elif (self.types in TYP_LINK):
             self.set(data, '<I', 0, len(data))
-        elif (self.types in [0x100, 0x2513]):
+        elif (self.types in TYP_VALUE):
             self.set(data, '<f', 0, len(data))
-        elif (self.types in [0x2034, 0x2035]):
+        elif (self.types in TYP_REFS):
             self.set(data, '<' + 'I' * int(len(data) / 4), 0, len(data))
-        elif (self.types in [0x96A, 0x96B, 0x96C, 0x2501, 0x2503, 0x2504, 0x2505, 0x2511]):
+        elif (self.types in TYP_ARRAY):
             self.set(data, '<' + 'f' * int(len(data) / 4), 0, len(data))
         elif (self.types == 0x2510):
             self.set(data, '<' + 'f' * int(len(data) / 4 - 1) + 'I', 0, len(data))
@@ -639,8 +656,9 @@ class ByteArrayChunk(MaxChunk):
 class ClassIDChunk(ByteArrayChunk):
     """The class ID subchunk of a .max chunk."""
 
-    def __init__(self, types, data, level, number):
-        MaxChunk.__init__(self, types, data, level, number)
+    def __init__(self, types, superid, size, level, number, data):
+        MaxChunk.__init__(self, types, superid, size, level, number, data)
+        self.superid = 0x5
         self.dll = None
 
     def set_data(self, data):
@@ -655,22 +673,22 @@ class ClassIDChunk(ByteArrayChunk):
 class DirectoryChunk(ByteArrayChunk):
     """The directory chunk of a .max file."""
 
-    def __init__(self, types, data, level, number):
-        MaxChunk.__init__(self, types, data, level, number)
+    def __init__(self, types, superid, size, level, number, data):
+        MaxChunk.__init__(self, types, superid, size, level, number, data)
+        self.superid = 0x4
 
     def set_data(self, data):
-        if (self.types == 0x2039):
-            self.set_string(data)
-        elif (self.types == 0x2037):
+        if (self.types in (0x2037, 0x2039)):
             self.set_string(data)
 
 
 class ContainerChunk(MaxChunk):
     """A container chunk in a .max file wich includes byte arrays."""
 
-    def __init__(self, types, data, level, number, primReader=ByteArrayChunk):
-        MaxChunk.__init__(self, types, data, level, number)
+    def __init__(self, types, superid, size, level, number, data, primReader=ByteArrayChunk):
+        MaxChunk.__init__(self, types, superid, size, level, number, data)
         self.primReader = primReader
+        self.superid = superid
 
     def __str__(self):
         return "%s[%4x]%04X" % ("" * self.level, self.number, self.types)
@@ -682,60 +700,61 @@ class ContainerChunk(MaxChunk):
         return None
 
     def set_data(self, data):
-        previous = None
-        following = None
+        pre = None
+        post = None
         reader = ChunkReader()
-        self.children = reader.get_chunks(data, self.level + 1, ContainerChunk, self.primReader)
+        self.children = reader.get_chunks(data, self.superid, self.level + 1, ContainerChunk, self.primReader)
 
 
 class SceneChunk(ContainerChunk):
     """The scene chunk of a .max file wich includes the relevant data for blender."""
 
-    def __init__(self, types, data, level, number, primReader=ByteArrayChunk):
-        MaxChunk.__init__(self, types, data, level, number)
+    def __init__(self, types, superid, size, level, number, data, primReader=ByteArrayChunk):
+        MaxChunk.__init__(self, types, superid, size, level, number, data)
         self.primReader = primReader
+        self.superid = 0x2
 
     def __str__(self):
         return "%s[%4x]%s" % ("" * self.level, self.number, get_cls_name(self))
 
     def set_data(self, data):
-        previous = None
-        following = None
-        # print('Scene', "%s" %(self))
+        pre = None
+        post = None
+        # print('Scene', "%s %s" % (hex(self.types), self))
         reader = ChunkReader()
-        self.children = reader.get_chunks(data, self.level + 1,
-                                          SceneChunk, ByteArrayChunk)
+        self.children = reader.get_chunks(data, self.superid, self.level + 1, SceneChunk, ByteArrayChunk)
 
 
-class ChunkReader():
+class ChunkReader(object):
     """The chunk reader class for decoding the byte arrays."""
 
-    def __init__(self, name=None):
+    def __init__(self, name=None, superid=None):
+        self.superid = superid
         self.name = name
 
-    def get_chunks(self, data, level, conReader, primReader):
+    def get_chunks(self, data, superid, level, conReader, primReader):
         chunks = []
         offset = 0
-        if (level == 0):
+        if (len(data) > ROOT_STORE and level == 0):
             root, step = get_short(data, 0)
             long, step = get_long(data, step)
             print("  reading '%s'..." % self.name, len(data))
             if (root == 0x8B1F):
                 long, step = get_long(data, step)
-                if (long in (0xB000000, 0xA040000)):
+                if (long in (0xB000000, 0xA040000, 0x8000001E)):
                     data = zlib.decompress(data, zlib.MAX_WBITS | 32)
-            elif (root in (0x8DB9, 0x87DE)):
-                chunk = primReader(root, len(data), level, 1)
-                chunk.set_data(data)
+            elif (superid == 0x000B):
+                chunk = primReader(root, superid, len(data), level, 1, data)
+                chunk.set_meta_data(data)
                 return [chunk]
         while offset < len(data):
             old = offset
-            offset, chunk = self.get_next_chunk(data, offset, level,
+            offset, chunk = self.get_next_chunk(data, superid, offset, level,
                                                 len(chunks), conReader, primReader)
             chunks.append(chunk)
         return chunks
 
-    def get_next_chunk(self, data, offset, level, number, conReader, primReader):
+    def get_next_chunk(self, data, superid, offset, level, number, conReader, primReader):
         header = 6
         typ, siz = struct.unpack("<Hi", data[offset:offset + header])
         chunksize = siz & UNKNOWN_SIZE
@@ -744,32 +763,72 @@ class ChunkReader():
             header += 8
             chunksize = siz & MAXFILE_SIZE
         if (siz < 0):
-            chunk = conReader(typ, chunksize, level, number, primReader)
+            chunk = conReader(typ, superid, chunksize, level, number, data, primReader)
         else:
-            chunk = primReader(typ, chunksize, level, number)
+            chunk = primReader(typ, superid, chunksize, level, number, data)
         chunkdata = data[offset + header:offset + chunksize]
         chunk.set_data(chunkdata)
         return offset + chunksize, chunk
 
 
-class Point3d():
-    """Representing a three dimensional vector plus pointflag."""
-
-    def __init__(self):
+class Mesh3d(object):
+    """Class representing a editable poly mesh object."""
+    
+    __slots__ = ("keys", "maps", "verts", "loops", "faces",
+                 "cords", "uvids", "points", "polys", "tris")
+    
+    def __init__(self, keys={}, maps=[], verts=[], loops=[], faces=[], cords=[], uvids=[]):
+        self.keys = keys
+        self.maps = maps
+        self.verts = verts
+        self.faces = faces
+        self.loops = loops
+        self.cords = cords
+        self.uvids = uvids
         self.points = None
-        self.flags = 0
-        self.fH = 0
-        self.f1 = 0
-        self.f2 = 0
-        self.fA = []
+        self.polys = None
+        self.tris = None
 
     def __str__(self):
-        return "[%s]-%X,%X,%X,[%s]" % ('/'.join("%d" % p for p in self.points),
-                                       self.fH, self.f1, self.f2,
-                                       ','.join("%X" % f for f in self.fA))
+        coordsize = [len(crds) // 3 for crds in self.cords]
+        return "[%d-%s][%d][%d-%s]" % (len(self.verts) // 3,
+                                       '/'.join("%d" % c for c in coordsize),
+                                       len(self.loops) // 2, len(self.faces),
+                                       '/'.join("%d" % len(u) for u in self.uvids))
+
+    def set(self, indices):
+        self.keys.clear()
+        self.faces.clear()
+        for point in indices:
+            face = point.points
+            key = point.group
+            self.faces.append(face)
+            if (key not in self.keys):
+                self.keys[key] = []
+            self.keys[key].append(face)
 
 
-class Material():
+class Point3d(object):
+    """Class representing a three dimensional vector plus pointflag."""
+
+    __slots__ = ("points", "flags", "group", "flag1", "flag2", "flag3", "fbits")
+
+    def __init__(self, points=None, flags=0, group=0, flag1=0, flag2=0, flag3=0, fbits=[]):
+        self.points = points
+        self.flags = flags
+        self.group = group
+        self.flag1 = flag1
+        self.flag2 = flag2
+        self.flag3 = flag3
+        self.fbits = fbits
+
+    def __str__(self):
+        return "[%s]:'%X'%x,%x,%x[%s]" % ('/'.join("%d" % p for p in self.points),
+                                         self.group, self.flag1, self.flag2, self.flag3,
+                                         ','.join("%x" % f for f in self.fbits))
+
+
+class Material(object):
     """Representing a material chunk of a scene chunk."""
 
     def __init__(self):
@@ -808,7 +867,7 @@ def get_node_parent(node):
 
 def get_node_name(node):
     if (node):
-        name = node.get_first(TYP_NAME)
+        name = node.get_first(0x0962)
         if (name):
             return name.data
     return None
@@ -834,8 +893,9 @@ def get_dll(chunk):
 def get_metadata(index):
     global META_DATA
     pathdata = META_DATA[0].data
-    if pathdata is not None:
-        return pathdata.get(index)
+    if pathdata:
+        pathname = pathdata.get(index)
+        return pathname[0][1] if pathname else None
     return pathdata
 
 
@@ -888,16 +948,16 @@ def get_reference(chunk):
     return references
 
 
-def read_chunks(maxfile, name, conReader=ContainerChunk, primReader=ByteArrayChunk):
+def read_chunks(maxfile, name, conReader=ContainerChunk, primReader=ByteArrayChunk, superId=None):
     with maxfile.openstream(name) as file:
         scene = file.read()
         reader = ChunkReader(name)
-        return reader.get_chunks(scene, 0, conReader, primReader)
+        return reader.get_chunks(scene, superId, 0, conReader, primReader)
 
 
 def read_class_data(maxfile, filename):
     global CLS_DATA
-    CLS_DATA = read_chunks(maxfile, 'ClassData')
+    CLS_DATA = read_chunks(maxfile, 'ClassData', superId=6)
 
 
 def read_class_directory(maxfile, filename):
@@ -912,7 +972,7 @@ def read_class_directory(maxfile, filename):
 
 def read_config(maxfile, filename):
     global CONFIG
-    CONFIG = read_chunks(maxfile, 'Config')
+    CONFIG = read_chunks(maxfile, 'Config', superId=7)
 
 
 def read_directory(maxfile, filename):
@@ -922,7 +982,7 @@ def read_directory(maxfile, filename):
 
 def read_video_postqueue(maxfile, filename):
     global VID_PST_QUE
-    VID_PST_QUE = read_chunks(maxfile, 'VideoPostQueue')
+    VID_PST_QUE = read_chunks(maxfile, 'VideoPostQueue', superId=8)
 
 
 def calc_point(data):
@@ -948,24 +1008,21 @@ def calc_point_3d(chunk):
     data = chunk.data
     count, offset = get_long(data, 0)
     pointlist = []
-    try:
-        while (offset < len(data)):
-            pt = Point3d()
-            long, offset = get_long(data, offset)
-            pt.points, offset = get_longs(data, offset, long)
-            pt.flags, offset = get_short(data, offset)
-            if ((pt.flags & 0x01) != 0):
-                pt.f1, offset = get_long(data, offset)
-            if ((pt.flags & 0x08) != 0):
-                pt.fH, offset = get_short(data, offset)
-            if ((pt.flags & 0x10) != 0):
-                pt.f2, offset = get_long(data, offset)
-            if ((pt.flags & 0x20) != 0):
-                pt.fA, offset = get_longs(data, offset, 2 * (long - 3))
-            if (len(pt.points) > 0):
-                pointlist.append(pt)
-    except Exception as exc:
-        print('ArrayError:\n', "%s: offset = %d\n" % (exc, offset))
+    while (offset < len(data)):
+        pt = Point3d()
+        long, offset = get_long(data, offset)
+        pt.points, offset = get_longs(data, offset, long)
+        pt.flags, offset = get_short(data, offset)
+        if ((pt.flags & 0x01) != 0):
+            (pt.flag1, pt.flag2), offset = get_shorts(data, offset, 2)
+        if ((pt.flags & 0x08) != 0):
+            pt.group, offset = get_short(data, offset)
+        if ((pt.flags & 0x10) != 0):
+            pt.flag3, offset = get_long(data, offset)
+        if ((pt.flags & 0x20) != 0):
+            pt.fbits, offset = get_longs(data, offset, 2 * (long - 3))
+        if (len(pt.points) > 0):
+            pointlist.append(pt)
     return pointlist
 
 
@@ -1008,38 +1065,31 @@ def get_point_array(values):
     return verts
 
 
-def get_poly_4p(points):
-    vertex = {}
-    for point in points:
-        ngon = point.points
-        key = point.fH
-        if (key not in vertex):
-            vertex[key] = []
-        vertex[key].append(ngon)
-    return vertex
-
-
-def get_poly_5p(data):
+def get_mesh_polys(data):
     count, offset = get_long(data, 0)
-    ngons = []
+    polygons = []
     while count > 0:
-        pt, offset = get_longs(data, offset, 3)
+        poly, offset = get_longs(data, offset, 3)
         offset += 8
-        ngons.append(pt)
+        polygons.append(poly)
         count -= 1
-    return ngons
+    return polygons
 
 
-def get_poly_6p(data):
-    count, offset = get_long(data, 0)
+def get_poly_ngons(chunk):
     polylist = []
+    data = chunk.data
+    counts, offset = get_long(data)
     while (offset < len(data)):
-        long, offset = get_longs(data, offset, 6)
-        i = 5
-        while ((i > 3) and (long[i] < 0)):
-            i -= 1
-            if (i > 2):
-                polylist.append(long[1:i])
+        pnt = Point3d()
+        pnt.flags, offset = get_short(data, offset)
+        pnt.group, offset = get_short(data, offset)
+        edge, offset = get_longs(data, offset, 2)
+        (v3, v4), offset = get_longs(data, offset, 2)
+        (pnt.flag1, pnt.flag2), offset = get_shorts(data, offset, 2)
+        v4 = edge[0] if v4 == FREESECT else v4
+        pnt.points = edge + (v3, v4)
+        polylist.append(pnt)
     return polylist
 
 
@@ -1054,17 +1104,40 @@ def get_poly_data(chunk):
     return polylist
 
 
+def get_mesh_loops(chunk):
+    offset = 0
+    meshloops = []
+    data = chunk.data
+    while (offset < len(data)):
+        count, starts = get_long(data, offset)
+        loops, offset = get_longs(data, starts, count)
+        meshloops.extend(loops)
+    return meshloops
+
+
 def get_uvw_coords(chunk):
     offset = 0
-    vindex = []
+    uvindex = []
     data = chunk.data
     while (offset < len(data)):
         idx, offset = get_long(data, offset)
-        vindex.append(idx)
-    cnt = vindex.pop(0)
-    facelist = list(zip(*[iter(vindex)]*3))
-    vindex.clear()
+        uvindex.append(idx)
+    cnt = uvindex.pop(0)
+    facelist = list(zip(*[iter(uvindex)]*3))
+    uvindex.clear()
     return facelist
+
+
+def get_tri_data(chunk):
+    offset = 0
+    vindex = []
+    data = chunk.data
+    head, offset = get_long(data)
+    while (offset < head):
+        idx, offset = get_long(data, offset)
+        vindex.append(idx)
+    triangles = list(zip(*[iter(vindex)]*3))
+    return triangles
 
 
 def get_property(properties, idx):
@@ -1082,16 +1155,20 @@ def get_bitmap(chunk, uid):
         if (len(parameters) >= 2):
             params = parameters[1]
             if (uid == 0x2):
-                path = params.get_first(0x1230)
-                if (path and path.data is not None):
-                    pathstring = path.data
+                custom = params.get_first(0x3)
+                if (custom is not None):
+                    pathchunk = custom.get_first(0x1230)
+                    if (pathchunk and pathchunk.data):
+                        pathstring = pathchunk.data
             elif (uid in (CORO_MTL, VRAY_MTL)):
                 for block in params.children:
                     if (block.children and get_guid(block) == 0x3333):
                         matlib = block.children[0]
-                if (matlib and matlib.data is not None):
-                    metaindex = struct.unpack('<IQI', matlib.data[:16])
-                    pathstring = get_metadata(metaindex[1])
+                if (matlib and matlib.data):
+                    idsize = len(matlib.data[:-4])
+                    assetid = struct.unpack('<' + 'IH' * int(idsize / 6), matlib.data[:idsize])
+                    metaidx = get_longs(matlib.data, idsize, len(matlib.data[idsize:]) // 4)[0]
+                    pathstring = get_metadata(metaidx[0])
         return pathstring
     return None
 
@@ -1236,8 +1313,7 @@ def adjust_material(filename, search, obj, mat):
             matShader.emission_color = material.get('emissive', (0, 0, 0))
             matShader.ior = material.get('refraction', 1.45)
             if texname is not None:
-                image = load_image(texname, dirname, place_holder=False, recursive=search, check_existing=True)
-                print('texname', texname)
+                image = load_image(str(texname), dirname, place_holder=False, recursive=search, check_existing=True)
                 if image is not None:
                     matShader.base_color_texture.image = image
 
@@ -1354,44 +1430,71 @@ def adjust_matrix(obj, node):
     return plc
 
 
-def create_shape(context, filename, node, key, pts, indices, uvdata, mat, obtypes, search):
-    name = node.get_first(TYP_NAME).data
-    shape = bpy.data.meshes.new(name)
-    if (key is not None):
-        name = "%s_%d" % (name, key)
+def draw_shape(name, mesh, faces, mat):
     data = []
-    if (pts):
-        loopstart = []
-        looplines = loop = 0
-        nb_faces = len(indices)
-        for fid in range(nb_faces):
-            polyface = indices[fid]
-            looplines += len(polyface)
-        shape.vertices.add(len(pts) // 3)
-        shape.loops.add(looplines)
-        shape.polygons.add(nb_faces)
-        shape.vertices.foreach_set("co", pts)
-        for vtx in indices:
-            loopstart.append(loop)
-            data.extend(vtx)
-            loop += len(vtx)
-        shape.polygons.foreach_set("loop_start", loopstart)
-        shape.loops.foreach_set("vertex_index", data)
-    if ('UV' in obtypes and uvdata is not None):
-        maps, crds, uvws = uvdata
-        for uvm in range(len(maps)):
-            coords = [co for i, co in enumerate(crds) if i % 3 in (0, 1)]
-            uvcord = list(zip(coords[0::2], coords[1::2]))
-            shape.uv_layers.new(do_init=False)
-            uvloops = tuple(uv for uvw in uvws for uvid in uvw for uv in uvcord[uvid])
-            shape.uv_layers.active.data.foreach_set("uv", uvloops)
-    shape.validate()
-    shape.update()
-    obj = bpy.data.objects.new(name, shape)
+    loopstart = []
+    looplines = loop = 0
+    nb_faces = len(faces)
+    for fid in range(nb_faces):
+        polyface = faces[fid]
+        looplines += len(polyface)
+    shape = bpy.data.meshes.new(name)
+    shape.vertices.add(len(mesh.verts) // 3)
+    shape.loops.add(looplines)
+    shape.polygons.add(nb_faces)
+    shape.vertices.foreach_set("co", mesh.verts)
+    for vtx in faces:
+        loopstart.append(loop)
+        data.extend(vtx)
+        loop += len(vtx)
+    shape.polygons.foreach_set("loop_start", loopstart)
+    shape.loops.foreach_set("vertex_index", data)
+    return shape
+
+
+def draw_map(shape, uvmap, uvcoords, uvwids):
+    uvlayer = shape.uv_layers.new(do_init=False)
+    if (uvmap > 1):
+        uvlayer.name = 'UVMap_%d' % (uvlayer.name, uvmap)
+    coords = [co for i, co in enumerate(uvcoords) if i % 3 in (0, 1)]
+    uvcord = list(zip(coords[0::2], coords[1::2]))
+    uvloops = tuple(uv for uvws in uvwids for uvid in uvws for uv in uvcord[uvid])
+    try:
+        shape.uv_layers.active.data.foreach_set("uv", uvloops)
+    except Exception as exc:
+        print('\tArrayLengthMismatchError: %s' % exc)
+    return shape
+
+
+def create_shape(context, settings, node, mesh, mat):
+    filename, obtypes, search = settings
+    name = node.get_first(0x0962)
+    if name is not None:
+        name = name.data
+    meshobject = draw_shape(name, mesh, mesh.faces, mat)
+    if ('UV' in obtypes and mesh.maps):
+        meshobject = draw_map(meshobject, 0, mesh.cords[0], mesh.uvids[0])
+    meshobject.validate()
+    meshobject.update()
+    obj = bpy.data.objects.new(name, meshobject)
     context.view_layer.active_layer_collection.collection.objects.link(obj)
     if ('MATERIAL' in obtypes):
         adjust_material(filename, search, obj, mat)
     object_list.append(obj)
+    if (len(mesh.keys) > 0):
+        for idx, (key, part) in enumerate(mesh.keys.items()):
+            name = '%s_%d' % (name, key)
+            meshpart = draw_shape(name, mesh, part, mat)
+            if (idx < len(mesh.maps) and 'UV' in obtypes):
+                print('mesh', idx, mesh, mesh.maps, mesh.cords, mesh.uvids, len(mesh.maps) >= idx)
+                meshpart = draw_map(meshpart, mesh.maps[idx], mesh.cords[idx], mesh.uvids[idx])
+            meshpart.validate()
+            meshpart.update()
+            partobj = bpy.data.objects.new(name, meshpart)
+            context.view_layer.active_layer_collection.collection.objects.link(partobj)
+            if ('MATERIAL' in obtypes):
+                adjust_material(filename, search, partobj, mat)
+            object_list.append(partobj)
     return object_list
 
 
@@ -1402,113 +1505,98 @@ def create_dummy_object(context, node, uid):
     return dummy
 
 
-def create_editable_poly(context, filename, node, msh, mat, obtypes, search):
-    point3i = point4i = point6i = pointNi = None
-    point = key = uvdata = None
-    poly = msh.get_first(0x08FE)
+def create_editable_poly(context, settings, node, msh, mat):
+    polychunk = msh.get_first(0x08FE)
     created = []
-    uvmap = []  # UVW maps
-    coord = []  # UVW coords
-    uvwid = []  # UVW indices
-    if (poly):
-        for child in poly.children:
+    if (polychunk):
+        mesh = Mesh3d()
+        mesh.maps.clear()
+        mesh.cords.clear()
+        mesh.uvids.clear()
+        for child in polychunk.children:
             if isinstance(child.data, tuple):
-                created = create_shape(context, filename, node, key, coord,
-                                       uvwid, uvdata, mat, obtypes, search)
+                created = create_shape(context, settings, node, mesh, mat)
             elif (child.types == 0x0100):
-                point = calc_point(child.data)
-            elif (child.types == 0x0310):
-                pointNi = child.data
+                mesh.verts = calc_point(child.data)
             elif (child.types == 0x0108):
-                point6i = child.data
-            elif (child.types == 0x011A):
-                point4i = calc_point_3d(child)
+                mesh.polys = get_poly_ngons(child)
             elif (child.types == 0x010A):
-                point3i = calc_point_float(child.data)
+                mesh.tris = calc_point_float(child.data)
+            elif (child.types == 0x011A):
+                mesh.points = calc_point_3d(child)
             elif (child.types == 0x0124):
-                uvmap.append(get_long(child.data, 0)[0])
+                mesh.maps.append(get_long(child.data, 0)[0])
             elif (child.types == 0x0128):
-                coord += calc_point_float(child.data)
+                mesh.cords.append(calc_point_float(child.data))
             elif (child.types == 0x012B):
-                uvwid += get_poly_data(child)
-        if (point3i is not None) and not coord:
-            coord += point3i
-        uvdata = uvmap, coord, uvwid
-        if (point4i is not None):
-            vertex = get_poly_4p(point4i)
-            if (len(vertex) > 0):
-                for key, quads in vertex.items():
-                    created += create_shape(context, filename, node, key, point,
-                                            quads, uvdata, mat, obtypes, search)
-        elif (point6i is not None):
-            ngons = get_poly_6p(point6i)
-            created += create_shape(context, filename, node, key, point,
-                                    ngons, uvdata, mat, obtypes, search)
-        elif (pointNi is not None):
-            ngons = get_poly_5p(pointNi)
-            created += create_shape(context, filename, node, key, point,
-                                    ngons, uvdata, mat, obtypes, search)
-        if (point3i is not None) and 'UV' not in obtypes:
-            created += create_shape(context, filename, node, key, point3i,
-                                    uvwid, uvdata, mat, obtypes, search)
+                mesh.uvids.append(get_poly_data(child))
+            elif (child.types == 0x0310):
+                mesh.loops = get_poly_data(child)
+        if (mesh.points is not None):
+            mesh.set(mesh.points)
+            created += create_shape(context, settings, node, mesh, mat)
+        elif (mesh.polys is not None):
+            mesh.set(mesh.polys)
+            created += create_shape(context, settings, node, mesh, mat)
+        elif (mesh.tris is not None) and 'UV' not in obtypes:
+            created += create_shape(context, settings, node, mesh, mat)
     return created
 
 
-def create_editable_mesh(context, filename, node, msh, mat, obtypes, search):
-    key = uvdata = None
-    poly = msh.get_first(0x08FE)
+def create_editable_mesh(context, settings, node, msh, mat):
+    meshchunk = msh.get_first(0x08FE)
     created = []
-    uvmap = []  # UVW maps
-    coord = []  # UVW coords
-    uvwid = []  # UVW indices
-    if (poly):
-        vertex_chunk = poly.get_first(0x0914)
-        clsid_chunk = poly.get_first(0x0912)
-        uvmap_chunk = poly.get_first(0x2398)
-        coord_chunk = poly.get_first(0x2394)
-        uvwid_chunk = poly.get_first(0x2396)
-        points = get_point_array(vertex_chunk.data)
-        ngons = get_poly_5p(clsid_chunk.data)
-        if uvmap_chunk and (len(coord_chunk.data) == len(vertex_chunk.data)):
-            uvmap.append(get_long(uvmap_chunk.data, 0)[0])
-            coord += get_point_array(coord_chunk.data)
-            uvwid += get_uvw_coords(uvwid_chunk)
-            uvdata = uvmap, coord, uvwid
-        created += create_shape(context, filename, node, key, points, ngons, uvdata, mat, obtypes, search)
+    if (meshchunk):
+        editmesh = Mesh3d()
+        editmesh.maps.clear()
+        editmesh.cords.clear()
+        editmesh.uvids.clear()
+        vertex_chunk = meshchunk.get_first(0x0914)
+        clsid_chunk = meshchunk.get_first(0x0912)
+        coord_chunk = meshchunk.get_first(0x2394)
+        uvwid_chunk = meshchunk.get_first(0x2396)
+        uvkey_chunk = meshchunk.get_first(0x2398)
+        if (vertex_chunk and clsid_chunk):
+            editmesh.verts = get_point_array(vertex_chunk.data)
+            editmesh.faces = get_mesh_polys(clsid_chunk.data)
+            if (coord_chunk and uvwid_chunk and uvkey_chunk):
+                editmesh.maps.append(get_long(uvkey_chunk.data, 0)[0])
+                editmesh.cords.append(get_point_array(coord_chunk.data))
+                editmesh.uvids.append(get_uvw_coords(uvwid_chunk))
+            created += create_shape(context, settings, node, editmesh, mat)
     return created
 
 
-def create_shell(context, filename, node, shell, mat, obtypes, search):
+def create_shell(context, settings, node, shell, mat):
     refs = get_references(shell)
     created = []
     if refs:
         msh = refs[-1]
-        if (get_guid(msh) == EDIT_POLY):
-            created += create_editable_poly(context, filename, node, msh, mat, obtypes, search)
-        else:
-            created += create_editable_mesh(context, filename, node, msh, mat, obtypes, search)
+        created, uid = create_mesh(context, settings, node, msh, mat)
     return created
 
 
 def create_skipable(context, node, skip):
-    name = node.get_first(TYP_NAME).data
-    print("    skipping %s '%s'... " % (skip, name))
+    name = node.get_first(0x0962)
+    if name is not None:
+        name = name.data
+        print("    skipping %s '%s'... " % (skip, name))
     return []
 
 
-def create_mesh(context, filename, node, msh, mat, obtypes, search):
+def create_mesh(context, settings, node, msh, mat):
     created = []
     object_list.clear()
     uid = get_guid(msh)
     if (uid == EDIT_MESH):
-        created = create_editable_mesh(context, filename, node, msh, mat, obtypes, search)
+        created = create_editable_mesh(context, settings, node, msh, mat)
     elif (uid == EDIT_POLY):
-        created = create_editable_poly(context, filename, node, msh, mat, obtypes, search)
+        created = create_editable_poly(context, settings, node, msh, mat)
     elif (uid in {0x2032, 0x2033}):
-        created = create_shell(context, filename, node, msh, mat, obtypes, search)
-    elif (uid == DUMMY and 'EMPTY' in obtypes):
+        created = create_shell(context, settings, node, msh, mat)
+    elif (uid == DUMMY and 'EMPTY' in settings[1]):
         created = [create_dummy_object(context, node, uid)]
-    elif (uid == BIPED_OBJ and 'ARMATURE' in obtypes):
+    elif (uid == BIPED_OBJ and 'ARMATURE' in settings[1]):
         created = [create_dummy_object(context, node, uid)]
     else:
         skip = SKIPPABLE.get(uid)
@@ -1517,17 +1605,17 @@ def create_mesh(context, filename, node, msh, mat, obtypes, search):
     return created, uid
 
 
-def create_object(context, filename, node, obtypes, search, transform):
+def create_object(context, settings, node, transform):
     parent = get_node_parent(node)
     nodename = get_node_name(node)
     parentname = get_node_name(parent)
     prs, msh, mat, lyr = get_matrix_mesh_material(node)
-    created, uid = create_mesh(context, filename, node, msh, mat, obtypes, search)
+    created, uid = create_mesh(context, settings, node, msh, mat)
     created = [idx for ob, idx in enumerate(created) if idx not in created[:ob]]
     for obj in created:
         if obj.name != nodename:
             parent_dict[obj.name] = parentname
-        if transform and obj.type == 'MESH':
+        if (transform and obj.type == 'MESH'):
             nodeloca = node.get_first(0x96A)
             noderota = node.get_first(0x96B)
             nodesize = node.get_first(0x96C)
@@ -1539,16 +1627,15 @@ def create_object(context, filename, node, obtypes, search, transform):
             obj.data.transform(p_mtx)
     matrix_dict[nodename] = create_matrix(prs)
     parent_dict[nodename] = parentname
-
     return nodename, created
 
 
-def make_scene(context, filename, mscale, obtypes, search, transform, parent):
+def make_scene(context, settings, mscale, transform, parent):
     imported = []
     for chunk in parent.children:
         if isinstance(chunk, SceneChunk) and get_guid(chunk) == 0x1 and get_super_id(chunk) == 0x1:
             try:
-                imported.append(create_object(context, filename, chunk, obtypes, search, transform))
+                imported.append(create_object(context, settings, chunk, transform))
             except Exception as exc:
                 print("\tImportError: %s %s" % (exc, chunk), get_node_name(chunk))
 
@@ -1566,30 +1653,35 @@ def make_scene(context, filename, mscale, obtypes, search, transform, parent):
                 except TypeError as te:
                     print("\tTypeError: %s '%s'" % (te, pt_name))
             if obj_mtx:
-                trans_mtx = prt_mtx @ obj_mtx
+                if obj.parent and obj.parent.empty_display_type != 'SINGLE_ARROW' and obj.type != 'MESH':
+                    trans_mtx = obj.parent.matrix_world @ obj_mtx
+                else:
+                    trans_mtx = prt_mtx @ obj_mtx
                 if transform:
                     obj.matrix_world = trans_mtx
                 obj.matrix_world = mscale @ obj.matrix_world
 
 
-def read_scene(context, maxfile, filename, mscale, obtypes, search, transform):
+def read_scene(context, maxfile, settings, mscale, transform):
     global SCENE_LIST, META_DATA
-    SCENE_LIST = read_chunks(maxfile, 'Scene', conReader=SceneChunk)
-    META_DATA = read_chunks(maxfile, maxfile.direntries[0xB].name) if any(entry and entry.sid == 0xB for entry in maxfile.direntries) else []
-    make_scene(context, filename, mscale, obtypes, search, transform, SCENE_LIST[0])
+    SCENE_LIST = read_chunks(maxfile, 'Scene', SceneChunk)
+    META_DATA = (read_chunks(maxfile, maxfile.direntries[0xB].name, superId=11) if
+                 any(entry and entry.sid == 0xB for entry in maxfile.direntries) else [])
+    make_scene(context, settings, mscale, transform, SCENE_LIST[0])
     # For debug: Print directory
     # print('Directory', maxfile.direntries[0].kids_dict.keys())
 
 
 def read(context, filename, mscale, obtypes, search, transform):
     if (is_maxfile(filename)):
+        settings = filename, obtypes, search
         maxfile = ImportMaxFile(filename)
         read_class_data(maxfile, filename)
         read_config(maxfile, filename)
         read_directory(maxfile, filename)
         read_class_directory(maxfile, filename)
         read_video_postqueue(maxfile, filename)
-        read_scene(context, maxfile, filename, mscale, obtypes, search, transform)
+        read_scene(context, maxfile, settings, mscale, transform)
     else:
         print("File seems to be no 3D Studio Max file!")
 
