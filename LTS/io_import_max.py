@@ -1646,7 +1646,6 @@ def create_shape(context, settings, node, mesh, mat):
             name = '%s_%d' % (name, key)
             meshpart = draw_shape(name, mesh, part, mat)
             if (idx < len(mesh.maps) and 'UV' in obtypes):
-                print('mesh', idx, mesh, mesh.maps, mesh.cords, mesh.uvids, len(mesh.maps) >= idx)
                 meshpart = draw_map(meshpart, mesh.maps[idx], mesh.cords[idx], mesh.uvids[idx])
             meshpart.validate()
             meshpart.update()
