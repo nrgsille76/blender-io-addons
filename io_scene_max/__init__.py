@@ -19,7 +19,7 @@ from bpy.props import (
 bl_info = {
     "name": "Import Autodesk MAX (.max)",
     "author": "Sebastian Sille, Philippe Lagadec, Jens M. Plonka",
-    "version": (1, 4, 6),
+    "version": (1, 4, 8),
     "blender": (4, 0, 0),
     "location": "File > Import",
     "description": "Import 3DSMAX meshes & materials",
