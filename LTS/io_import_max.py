@@ -1484,6 +1484,7 @@ def adjust_material(filename, search, obj, mat):
             shader.metallic = objMaterial.metallic = material.get('metallic', 0)
             shader.emission_color = material.get('emissive', (0, 0, 0))
             shader.ior = material.get('refraction', 1.45)
+            shader.emission_strength = 0.0
             texname = material.get('bitmap', None)
             roughmap = material.get('roughmap', None)
             specmap = material.get('specmap', None)
