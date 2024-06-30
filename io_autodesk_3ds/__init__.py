@@ -16,9 +16,9 @@ from bpy.props import (
 )
 import bpy
 bl_info = {
-    "name": "Autodesk 3DS format",
+    "name": "Autodesk 3DS Format (.3ds)",
     "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
-    "version": (2, 5, 0),
+    "version": (2, 5, 8),
     "blender": (4, 1, 0),
     "location": "File > Import-Export",
     "description": "3DS Import/Export meshes, UVs, materials, textures, "
