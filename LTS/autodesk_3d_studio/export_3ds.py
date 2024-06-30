@@ -1251,7 +1251,7 @@ def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size):
     return track_chunk
 
 
-def make_object_node(ob, translation, position, scale, name_id, use_apply_transform):
+def make_object_node(ob, position, rotation, scale, name_id, use_apply_transform):
     """Make a node chunk for a Blender object. Takes Blender object as parameter.
        Blender Empty objects are converted to dummy nodes."""
 
