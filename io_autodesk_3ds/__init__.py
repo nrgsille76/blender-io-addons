@@ -123,9 +123,6 @@ class Import_3DS(bpy.types.Operator, ImportHelper):
 
         return import_3ds.load(self, context, **keywords)
 
-    def invoke(self, context, event):
-        return self.invoke_popup(context)
-
 
 def import_include(layout, operator):
     header, body = layout.panel("3DS_import_include", default_closed=False)
