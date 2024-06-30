@@ -1676,12 +1676,9 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
                             ma = ma_ls[ma_index]
                             ma_name = None if ma is None else ma.name
                         # Else there already set to none
-
                         img = get_uv_image(ma)
                         img_name = None if img is None else img.name
-
                         materialDict.setdefault((ma_name, img_name), (ma, img))
-
                 else:
                     for ma in ma_ls:
                         if ma:  # Material may be None so check its not
@@ -1691,7 +1688,6 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
                     for f in data.polygons:
                         if f.material_index >= ma_ls_len:
                             f.material_index = 0
-
 
     # Make MATERIAL chunks for all materials used in the meshes
     for ma_image in materialDict.values():
@@ -1806,14 +1802,12 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
         if use_keyframes and world.animation_data or (world.node_tree and world.node_tree.animation_data):
             kfdata.add_subchunk(make_ambient_node(world))
 
-    # Collect translation for transformation matrix
-    position = {}
-    rotation = {}
-    scale = {}
-
     # Give all objects a unique ID and build a dictionary from object name to object id
     object_id = {}
     name_id = {}
+    position = {}
+    rotation = {}
+    scale = {}
 
     for ob, data, matrix in mesh_objects:
         position[ob.name] = mtx_scale @ ob.location
