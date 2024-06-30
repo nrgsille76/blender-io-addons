@@ -20,7 +20,7 @@ bl_info = {
     "name": "Autodesk 3D Studio (.3ds)",
     "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
     "version": (2, 4, 9),
-    "blender": (3, 6, 0),
+    "blender": (3, 3, 0),
     "location": "File > Import-Export",
     "description": "3DS Import/Export meshes, UVs, materials, textures, "
                    "cameras, lamps & animation",
