@@ -13,6 +13,7 @@ from bpy.props import (
     EnumProperty,
     FloatProperty,
     StringProperty,
+    CollectionProperty,
 )
 import bpy
 bl_info = {
