@@ -38,7 +38,7 @@ if "bpy" in locals():
 
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
-class Import3DS(bpy.types.Operator, ImportHelper):
+class Import_3DS(bpy.types.Operator, ImportHelper):
     """Import from 3DS file format (.3ds)"""
     bl_idname = "import_scene.3ds"
     bl_label = 'Import 3DS'
@@ -127,7 +127,7 @@ class Import3DS(bpy.types.Operator, ImportHelper):
 
 
 def import_include(layout, operator):
-    header, body = layout.panel("MAX3DS_import_include", default_closed=False)
+    header, body = layout.panel("3DS_import_include", default_closed=False)
     header.label(text="Include")
     if body:
         line = body.row(align=True)
@@ -146,7 +146,7 @@ def import_include(layout, operator):
 
 
 def import_transform(layout, operator):
-    header, body = layout.panel("MAX3DS_import_transform", default_closed=False)
+    header, body = layout.panel("3DS_import_transform", default_closed=False)
     header.label(text="Transform")
     if body:
         body.prop(operator, "constrain_size")
@@ -161,7 +161,7 @@ def import_transform(layout, operator):
 
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
-class Export3DS(bpy.types.Operator, ExportHelper):
+class Export_3DS(bpy.types.Operator, ExportHelper):
     """Export to 3DS file format (.3ds)"""
     bl_idname = "export_scene.3ds"
     bl_label = 'Export 3DS'
@@ -256,7 +256,7 @@ class Export3DS(bpy.types.Operator, ExportHelper):
 
 
 def export_include(layout, operator, browser):
-    header, body = layout.panel("MAX3DS_export_include", default_closed=False)
+    header, body = layout.panel("3DS_export_include", default_closed=False)
     header.label(text="Include")
     if body:
         if browser:
@@ -280,7 +280,7 @@ def export_include(layout, operator, browser):
 
 
 def export_transform(layout, operator):
-    header, body = layout.panel("MAX3DS_export_transform", default_closed=False)
+    header, body = layout.panel("3DS_export_transform", default_closed=False)
     header.label(text="Transform")
     if body:
         body.prop(operator, "scale_factor")
@@ -294,8 +294,8 @@ def export_transform(layout, operator):
         body.prop(operator, "axis_up")
 
 
-class IO_FH_3dsMax(bpy.types.FileHandler):
-    bl_idname = "IO_FH_3dsMax"
+class IO_FH_3DS(bpy.types.FileHandler):
+    bl_idname = "IO_FH_3DS"
     bl_label = "3DS"
     bl_import_operator = "import_scene.3ds"
     bl_export_operator = "export_scene.3ds"
@@ -308,25 +308,25 @@ class IO_FH_3dsMax(bpy.types.FileHandler):
 
 # Add to a menu
 def menu_func_export(self, context):
-    self.layout.operator(Export3DS.bl_idname, text="Autodesk 3DS (.3ds)")
+    self.layout.operator(Export_3DS.bl_idname, text="Autodesk 3DS (.3ds)")
 
 
 def menu_func_import(self, context):
-    self.layout.operator(Import3DS.bl_idname, text="Autodesk 3DS (.3ds)")
+    self.layout.operator(Import_3DS.bl_idname, text="Autodesk 3DS (.3ds)")
 
 
 def register():
-    bpy.utils.register_class(Import3DS)
-    bpy.utils.register_class(Export3DS)
-    bpy.utils.register_class(IO_FH_3dsMax)
+    bpy.utils.register_class(Import_3DS)
+    bpy.utils.register_class(Export_3DS)
+    bpy.utils.register_class(IO_FH_3DS)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 
 def unregister():
-    bpy.utils.unregister_class(Import3DS)
-    bpy.utils.unregister_class(Export3DS)
-    bpy.utils.unregister_class(IO_FH_3dsMax)
+    bpy.utils.unregister_class(Import_3DS)
+    bpy.utils.unregister_class(Export_3DS)
+    bpy.utils.unregister_class(IO_FH_3DS)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 
