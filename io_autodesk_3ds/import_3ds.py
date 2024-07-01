@@ -411,6 +411,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             for v1, v2, v3 in ContextMesh_facels:
                 eekadoodle_faces.extend((v3, v1, v2) if v3 == 0 else (v1, v2, v3))
             bmesh.polygons.foreach_set("loop_start", range(0, nbr_faces * 3, 3))
+            bmesh.polygons.foreach_set("loop_total", (3,) * nbr_faces)
             bmesh.loops.foreach_set("vertex_index", eekadoodle_faces)
 
             if bmesh.polygons and contextMeshUV:
@@ -552,7 +553,11 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             elif temp_chunk.ID == MAT_BUMP_PERCENT:
                 contextWrapper.normalmap_strength = (float(read_short(temp_chunk) / 100))
             elif mapto in {'COLOR', 'SPECULARITY'} and temp_chunk.ID == MAT_MAP_TEXBLUR:
-                contextWrapper.node_principled_bsdf.inputs['Sheen Weight'].default_value = float(read_float(temp_chunk))
+                sheen = float(read_float(temp_chunk))
+                try:
+                    contextWrapper.node_principled_bsdf.inputs['Sheen Weight'].default_value = sheen
+                except:
+                    contextWrapper.node_principled_bsdf.inputs['Sheen'].default_value = sheen
 
             elif temp_chunk.ID == MAT_MAP_TILING:
                 """Control bit flags, 0x1 activates decaling, 0x2 activates mirror, 0x8 activates inversion,
@@ -1477,7 +1482,10 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif new_chunk.ID == MORPH_SMOOTH and tracking == 'OBJECT':  # Smooth angle
             smooth_angle = read_float(new_chunk)
             if child.data is not None:  # Check if child is a dummy
-                child.data.set_sharp_from_angle(angle=smooth_angle)
+                try:
+                    child.data.set_sharp_from_angle(angle=smooth_angle)
+                except:
+                    child.data.auto_smooth_angle = smooth_angle
 
         elif KEYFRAME and new_chunk.ID == COL_TRACK_TAG and tracking == 'AMBIENT':  # Ambient
             keyframe_data = {}
@@ -1775,6 +1783,11 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
             MEASURE = 0.0000254
         elif unit_length == 'MICROMETERS':
             MEASURE = 0.000001
+
+    if CONVERSE is None:
+        CONVERSE = mathutils.Matrix()
+    if FILTER is None:
+        FILTER = {'WORLD', 'MESH', 'LIGHT', 'CAMERA', 'EMPTY'}
 
     context.window.cursor_set('WAIT')
     imported_objects = []  # Fill this list with objects
