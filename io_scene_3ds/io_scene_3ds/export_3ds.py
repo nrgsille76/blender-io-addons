@@ -1119,7 +1119,7 @@ def make_kfdata(revision, start=0, stop=100, curtime=0):
     return kfdata
 
 
-def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size):
+def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size, ob_mtx):
     """Make a chunk for track data. Depending on the ID, this will construct
     a position, rotation, scale, roll, color, fov, hotspot or falloff track."""
     track_chunk = _3ds_chunk(ID)
@@ -1145,7 +1145,7 @@ def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size):
                     pos_x = next((tc.evaluate(frame) for tc in pos_track if tc.array_index == 0), ob_pos.x)
                     pos_y = next((tc.evaluate(frame) for tc in pos_track if tc.array_index == 1), ob_pos.y)
                     pos_z = next((tc.evaluate(frame) for tc in pos_track if tc.array_index == 2), ob_pos.z)
-                    pos = ob_size @ mathutils.Vector((pos_x, pos_y, pos_z))
+                    pos = ob_mtx @ mathutils.Vector((pos_x, pos_y, pos_z))
                     track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
                     track_chunk.add_variable("tcb_flags", _3ds_ushort())
                     track_chunk.add_variable("position", _3ds_point_3d((pos.x, pos.y, pos.z)))
@@ -1266,7 +1266,7 @@ def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size):
     return track_chunk
 
 
-def make_object_node(ob, transmtx, position, rotation, scale, name_id, use_apply_transform):
+def make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform):
     """Make a node chunk for a Blender object. Takes Blender object as parameter.
        Blender Empty objects are converted to dummy nodes."""
 
@@ -1353,7 +1353,7 @@ def make_object_node(ob, transmtx, position, rotation, scale, name_id, use_apply
     if parent is None or (parent.name not in name_id):
         ob_pos = position[name] if use_apply_transform else mathutils.Vector((0.0, 0.0, 0.0))
         ob_rot = rotation[name] if use_apply_transform else mathutils.Euler((0.0, 0.0, 0.0), 'XYZ')
-        ob_size = ob.scale
+        ob_size = scale[name]
 
     else:  # Use parent position and rotation as object center, no scale applied
         pos_invert = (position[name] - position[parent.name]) @ rotation[parent.name].to_matrix()
