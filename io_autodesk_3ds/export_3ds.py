@@ -1256,7 +1256,7 @@ def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size):
     return track_chunk
 
 
-def make_object_node(ob, position, rotation, scale, name_id, use_apply_transform):
+def make_object_node(ob, transmtx, position, rotation, scale, name_id, use_apply_transform):
     """Make a node chunk for a Blender object. Takes Blender object as parameter.
        Blender Empty objects are converted to dummy nodes."""
 
@@ -1339,7 +1339,7 @@ def make_object_node(ob, position, rotation, scale, name_id, use_apply_transform
             obj_node.add_subchunk(obj_morph_smooth)
 
     # Add track chunks for position, rotation, size
-    ob_scale = scale[name]  # and collect masterscale
+    ob_mtx = transmtx[name]  # and collect masterscale
     if parent is None or (parent.name not in name_id):
         ob_pos = position[name] if use_apply_transform else mathutils.Vector((0.0, 0.0, 0.0))
         ob_rot = rotation[name] if use_apply_transform else mathutils.Euler((0.0, 0.0, 0.0), 'XYZ')
@@ -1352,25 +1352,25 @@ def make_object_node(ob, position, rotation, scale, name_id, use_apply_transform
         ob_rot = rot_invert.to_euler() if use_apply_transform else rotation[parent.name]
         ob_size = mathutils.Vector((1.0, 1.0, 1.0))
 
-    obj_node.add_subchunk(make_track_chunk(POS_TRACK_TAG, ob, ob_pos, ob_rot, ob_scale))
+    obj_node.add_subchunk(make_track_chunk(POS_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
 
     if ob.type == 'MESH' or ob.type in EMPTYS:
-        obj_node.add_subchunk(make_track_chunk(ROT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
-        obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
+        obj_node.add_subchunk(make_track_chunk(ROT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
     if ob.type =='CAMERA':
-        obj_node.add_subchunk(make_track_chunk(FOV_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
-        obj_node.add_subchunk(make_track_chunk(ROLL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
+        obj_node.add_subchunk(make_track_chunk(FOV_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(ROLL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
     if ob.type =='LIGHT':
-        obj_node.add_subchunk(make_track_chunk(COL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
+        obj_node.add_subchunk(make_track_chunk(COL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
     if ob.type == 'LIGHT' and ob.data.type == 'SPOT':
-        obj_node.add_subchunk(make_track_chunk(HOTSPOT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
-        obj_node.add_subchunk(make_track_chunk(FALLOFF_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
-        obj_node.add_subchunk(make_track_chunk(ROLL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size))
+        obj_node.add_subchunk(make_track_chunk(HOTSPOT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(FALLOFF_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(ROLL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
 
     return obj_node
 
 
-def make_target_node(ob, position, rotation, scale, name_id):
+def make_target_node(ob, name_id, transmtx, position, rotation):
     """Make a target chunk for light and camera objects."""
 
     name = ob.name
@@ -1397,9 +1397,9 @@ def make_target_node(ob, position, rotation, scale, name_id):
     tar_node.add_subchunk(tar_node_header_chunk)
 
     # Calculate target position
+    ob_mtx = transmtx[name]
     ob_pos = position[name]
     ob_rot = rotation[name]
-    ob_scale = scale[name]
     target_pos = calc_target(ob_pos, ob_rot.x, ob_rot.z)
 
     # Add track chunks for target position
@@ -1428,7 +1428,7 @@ def make_target_node(ob, position, rotation, scale, name_id):
                 rot_target = [fc for fc in fcurves if fc is not None and fc.data_path == 'rotation_euler']
                 rot_x = next((tc.evaluate(frame) for tc in rot_target if tc.array_index == 0), ob_rot.x)
                 rot_z = next((tc.evaluate(frame) for tc in rot_target if tc.array_index == 2), ob_rot.z)
-                target_distance = ob_scale @ mathutils.Vector((loc_x, loc_y, loc_z))
+                target_distance = ob_mtx @ mathutils.Vector((loc_x, loc_y, loc_z))
                 target_pos = calc_target(target_distance, rot_x, rot_z)
                 track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
                 track_chunk.add_variable("tcb_flags", _3ds_ushort())
@@ -1806,36 +1806,41 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
     # Give all objects a unique ID and build a dictionary from object name to object id
     object_id = {}
     name_id = {}
+    transmtx = {}
     position = {}
     rotation = {}
     scale = {}
 
     for ob, data, matrix in mesh_objects:
+        name_id[ob.name]= len(name_id)
+        object_id[ob.name] = len(object_id)
+        transmtx[ob.name] = mtx_scale.copy()
         position[ob.name] = mtx_scale @ matrix.to_translation()
         rotation[ob.name] = matrix.to_euler()
-        scale[ob.name] = mtx_scale.copy()
-        name_id[ob.name] = len(name_id)
-        object_id[ob.name] = len(object_id)
+        scale[ob.name] = mtx_scale @ matrix.to_scale()
 
     for ob in empty_objects:
+        name_id[ob.name]= len(name_id)
+        transmtx[ob.name] = mtx_scale.copy()
         position[ob.name] = mtx_scale @ ob.location
         rotation[ob.name] = ob.rotation_euler
-        scale[ob.name] = mtx_scale.copy()
-        name_id[ob.name] = len(name_id)
+        scale[ob.name] = mtx_scale @ ob.scale
 
     for ob in light_objects:
-        position[ob.name] = mtx_scale @ ob.location
-        rotation[ob.name] = ob.rotation_euler
-        scale[ob.name] = mtx_scale.copy()
         name_id[ob.name] = len(name_id)
         object_id[ob.name] = len(object_id)
+        transmtx[ob.name] = mtx_scale.copy()
+        position[ob.name] = mtx_scale @ ob.location
+        rotation[ob.name] = ob.rotation_euler
+        scale[ob.name] = mtx_scale @ ob.scale
 
     for ob in camera_objects:
-        position[ob.name] = mtx_scale @ ob.location
-        rotation[ob.name] = ob.rotation_euler
-        scale[ob.name] = mtx_scale.copy()
         name_id[ob.name] = len(name_id)
         object_id[ob.name] = len(object_id)
+        transmtx[ob.name] = mtx_scale.copy()
+        position[ob.name] = mtx_scale @ ob.location
+        rotation[ob.name] = ob.rotation_euler
+        scale[ob.name] = mtx_scale @ ob.scale
 
     # Create object chunks for all meshes
     i = 0
@@ -1869,14 +1874,14 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
 
         # Export object node
         if use_keyframes and not use_hierarchy:
-            kfdata.add_subchunk(make_object_node(ob, position, rotation, scale, name_id, use_apply_transform))
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
 
         i += i
 
     # Create chunks for all empties - only requires a object node
     if use_keyframes and not use_hierarchy:
         for ob in empty_objects:
-            kfdata.add_subchunk(make_object_node(ob, position, rotation, scale, name_id, use_apply_transform))
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
 
     # Create light object chunks
     for ob in light_objects:
@@ -1965,9 +1970,9 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
 
         # Export light and spotlight target node
         if use_keyframes:
-            kfdata.add_subchunk(make_object_node(ob, position, rotation, scale, name_id, use_apply_transform))
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
             if ob.data.type == 'SPOT':
-                kfdata.add_subchunk(make_target_node(ob, position, rotation, scale, name_id))
+                kfdata.add_subchunk(make_target_node(ob, name_id, transmtx, position, rotation))
 
     # Create camera object chunks
     for ob in camera_objects:
@@ -2002,8 +2007,8 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
 
         # Export camera and target node
         if use_keyframes:
-            kfdata.add_subchunk(make_object_node(ob, position, rotation, scale, name_id, use_apply_transform))
-            kfdata.add_subchunk(make_target_node(ob, position, rotation, scale, name_id))
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
+            kfdata.add_subchunk(make_target_node(ob, name_id, transmtx, position, rotation))
 
     # Add main object info chunk to primary chunk
     primary.add_subchunk(object_info)
