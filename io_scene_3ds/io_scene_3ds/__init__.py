@@ -32,6 +32,19 @@ if "bpy" in locals():
     if "export_3ds" in locals():
         importlib.reload(export_3ds)
 
+bl_info = {
+    "name": "Autodesk 3D Studio (.3ds)",
+    "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
+    "version": (2, 4, 9),
+    "blender": (4, 0, 0),
+    "location": "File > Import-Export",
+    "description": "3DS Import/Export meshes, UVs, materials, textures, "
+                   "cameras, lamps & animation",
+    "warning": "Images must be in file folder, "
+               "filenames are limited to DOS 8.3 format",
+    "doc_url": "{BLENDER_MANUAL_URL}/addons/import_export/scene_3ds.html",
+    "category": "Import-Export",
+}
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
 class Import3DS(bpy.types.Operator, ImportHelper):
