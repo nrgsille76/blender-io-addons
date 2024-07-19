@@ -6,7 +6,7 @@ Autodesk 3DS
 
    :Category: Import-Export
    :Menu: :menuselection:`File --> Import/Export --> Autodesk 3DS (.3ds)`
-   :Version: 2.7.0
+   :Version: 2.7.2
    :Blender: 4.2
    :Authors: Bob Holcomb, Campbell Barton, Sebastian Schrand
    :Maintainer: Sebastian Sille (NRGSille)
