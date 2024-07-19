@@ -1,39 +1,30 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 [tool.autopep8]
-# Configuration for `autopep8`, allowing the command: autopep8 .
-# to reformat all source files.
-#
-# NOTE: the settings defined here map directly to command line arguments
-# which will override these settings when passed in to autopep8.
-
 max_line_length = 120
+ignore = ["E721", "E722", "E402", "W690"]
+aggressive = 2
 
-ignore = [
-    # Info: Use `isinstance()` instead of comparing types directly.
-    # Why disable? Changes code logic, in rare cases we want to compare exact types.
-    "E721",
-    # Info: Fix bare except.
-    # Why disable? Disruptive, leave our exceptions alone.
-    "E722",
-    # Info: Fix module level import not at top of file.
-    # Why disable? Re-ordering imports is disruptive and breaks some scripts
-    # that need to check if a module has already been loaded in the case of reloading.
-    "E402",
-    # Info: Fix various deprecated code (via lib2to3)
-    # Why disable? Does nothing besides incorrectly adding a duplicate import,
-    # could be reported as a bug except this is likely to be removed soon, see:
-    # https://github.com/python/cpython/issues/84540.
-    "W690",
+[project]
+name = "io_scene_3ds"
+version = "2.7.2"
+authors = [{ name="Sebastian Sille", email="nrgsille@gmail.com" }]
+description = "Autodesk 3D Studio Blender Extension"
+readme = "README.md"
+requires-python = ">=3"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: GPL Approved :: GPL-2.0-or-later",
+    "Operating System :: OS Independent",
 ]
 
-# Use aggressive as many useful edits are disabled unless it's enabled.
-# Any edits which are overly disruptive or risky can be removed in the `ignore` list.
-aggressive = 2
+[project.urls]
+Homepage = "https://github.com/nrgsille76/blender-io-addons"
+Issues = "https://github.com/nrgsille76/blender-io-addons/issues"
 
 [tool.poetry]
 name = "io_scene_3ds"
-version = "2.7.0"
+version = "2.7.2"
 description = "Autodesk 3D Studio Blender Extension"
 license = "GPL-2.0-or-later"
 authors = ["Bob Holcomb", "Campbell Barton", "Sebastian Schrand"]
@@ -41,3 +32,6 @@ maintainers = ["Sebastian Sille <nrgsille@gmail.com>"]
 readme = "README.md"
 homepage = "https://www.nrgsille.com/"
 repository = "https://github.com/nrgsille76/blender-io-addons"
+
+[tool.poetry.dependencies]
+python = "^3"
