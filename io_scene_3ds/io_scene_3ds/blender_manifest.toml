@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 id = "autodesk_3ds_format"
 name = "Autodesk 3D Studio (.3ds)"
-version = "2.7.0"
+version = "2.7.2"
 tagline = "Import-Export 3DS scenes, objects, cameras, lights & animations"
 maintainer = "Sebastian Sille"
 type = "add-on"
