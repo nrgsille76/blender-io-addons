@@ -1718,7 +1718,6 @@ def read(context, filename, mscale, obtypes, search, transform):
 def load(operator, context, files=None, directory="", filepath="", scale_objects=1.0, use_collection=False,
          use_image_search=True, object_filter=None, use_apply_matrix=True, global_matrix=None):
 
-    materials.clear()
     object_dict.clear()
     parent_dict.clear()
     matrix_dict.clear()
@@ -1739,7 +1738,6 @@ def load(operator, context, files=None, directory="", filepath="", scale_objects
             context.view_layer.active_layer_collection = context.view_layer.layer_collection.children[collection.name]
         read(context, os.path.join(directory, fl.name), mscale, obtypes=object_filter, search=use_image_search, transform=use_apply_matrix)
 
-    materials.clear()
     object_dict.clear()
     parent_dict.clear()
     matrix_dict.clear()
