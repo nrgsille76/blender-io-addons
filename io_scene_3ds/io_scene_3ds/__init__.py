@@ -5,10 +5,13 @@
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
-__version__ = "2.7.2"
+__version__ = "2.7.6"
 __date__ = "24 Sep 2020"
 
 
+import bpy
+from . import import_3ds
+from . import export_3ds
 from bpy_extras.io_utils import (
     ImportHelper,
     ExportHelper,
@@ -23,7 +26,6 @@ from bpy.props import (
     StringProperty,
     CollectionProperty,
 )
-import bpy
 
 if "bpy" in locals():
     import importlib
@@ -35,7 +37,7 @@ if "bpy" in locals():
 bl_info = {
     "name": "Autodesk 3D Studio (.3ds)",
     "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
-    "version": (2, 7, 2),
+    "version": (2, 7, 6),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "3DS Import/Export meshes, UVs, materials, textures, "
@@ -92,7 +94,7 @@ class Import3DS(bpy.types.Operator, ImportHelper):
         name="Apply Transform",
         description="Workaround for object transformations "
         "importing incorrectly",
-        default=True,
+        default=False,
     )
     use_keyframes: BoolProperty(
         name="Animation",
@@ -119,7 +121,6 @@ class Import3DS(bpy.types.Operator, ImportHelper):
         import_transform(layout, self)
 
     def execute(self, context):
-        from . import import_3ds
         keywords = self.as_keywords(ignore=("axis_forward",
                                             "axis_up",
                                             "filter_glob",
@@ -250,7 +251,6 @@ class Export3DS(bpy.types.Operator, ExportHelper):
         export_transform(layout, self)
 
     def execute(self, context):
-        from . import export_3ds
         keywords = self.as_keywords(ignore=("axis_forward",
                                             "axis_up",
                                             "filter_glob",
