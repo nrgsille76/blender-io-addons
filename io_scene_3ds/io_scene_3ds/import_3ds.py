@@ -92,6 +92,13 @@ MAT_BUMP_PERCENT = 0xA252  # Normalmap strength (percent)
 MAT_TEX2_MAP = 0xA33A  # This is a header for a secondary texture
 MAT_SHIN_MAP = 0xA33C  # This is a header for a new roughness map
 MAT_SELFI_MAP = 0xA33D  # This is a header for a new emission map
+MAT_TEX_MASK = 0xA33E  # This is a header for a new texture mask
+MAT_OPAC_MASK = 0xA342  # This is a header for a new opacity mask
+MAT_BUMP_MASK = 0xA344  # This is a header for a new normal mask
+MAT_SHIN_MASK = 0xA346  # This is a header for a new shininess mask
+MAT_SPEC_MASK = 0xA348  # This is a header for a new specular mask
+MAT_SELFI_MASK = 0xA34A  # This is a header for a new emission mask
+MAT_REFL_MASK = 0xA34C  # This is a header for a new reflection mask
 MAT_MAP_FILEPATH = 0xA300  # This holds the file name of the texture
 MAT_MAP_TILING = 0xA351  # 2nd bit (from LSB) is mirror UV flag
 MAT_MAP_TEXBLUR = 0xA353  # Texture blurring factor (float 0-1)
@@ -107,6 +114,8 @@ MAT_MAP_GCOL = 0xA366  # Green mapping
 MAT_MAP_BCOL = 0xA368  # Blue mapping
 
 # >------ sub defines of OBJECT
+OBJECT_NOLOFTER = 0x4011  # Object doesnt render flag
+OBJECT_NOSHADOW = 0x4012  # Object doesnt cast shadows flag
 OBJECT_MESH = 0x4100  # This lets us know that we are reading a new object
 OBJECT_LIGHT = 0x4600  # This lets us know we are reading a light object
 OBJECT_CAMERA = 0x4700  # This lets us know we are reading a camera object
@@ -189,12 +198,10 @@ parent_dictionary = {}
 matrix_dictionary = {}
 
 
-class Chunk:
-    __slots__ = (
-        "ID",
-        "length",
-        "bytes_read",
-    )
+class Chunk(object):
+
+    __slots__ = "ID", "length", "bytes_read"
+
     # we don't read in the bytes_read, we compute that
     binary_format = '<HI'
 
@@ -248,7 +255,8 @@ def skip_to_end(file, skip_chunk):
 # MATERIALS #
 #############
 
-def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, offset, angle, tint1, tint2, mapto):
+def add_texture_to_material(image, contextWrapper, pct, extend, alpha,
+                            scale, offset, angle, luma, tint1, tint2, mapto):
     shader = contextWrapper.node_principled_bsdf
     nodetree = contextWrapper.material.node_tree
     shader.location = (-300, 0)
@@ -263,61 +271,80 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
             tint1[:3] + [1] if tint1 else shader.inputs['Base Color'].default_value[:])
         contextWrapper._grid_to_location(1, 2, dst_node=mixer, ref_node=shader)
         img_wrap = contextWrapper.base_color_texture
-        image.alpha_mode = 'CHANNEL_PACKED'
+        img_wrap.node_mapping.name = 'Diffuse Mapping'
+        img_wrap.node_image.name = 'Diffuse Texture'
         links.new(mixer.outputs[0], shader.inputs['Base Color'])
+        links.new(img_wrap.node_image.outputs[0], mixer.inputs[2])
+        if luma == 'alpha':
+            image.alpha_mode = 'CHANNEL_PACKED'
+            links.new(img_wrap.node_image.outputs[1], shader.inputs['Alpha'])
         if tint2 is not None:
-            img_wrap.colorspace_name = 'Non-Color'
-            mixer.inputs[2].default_value = tint2[:3] + [1]
-            links.new(img_wrap.node_image.outputs[0], mixer.inputs[0])
-        else:
-            links.new(img_wrap.node_image.outputs[0], mixer.inputs[2])
+            mixer.inputs[2].default_value = tint2[:3] + [1]    
     elif mapto == 'ROUGHNESS':
         img_wrap = contextWrapper.roughness_texture
     elif mapto == 'METALLIC':
-        shader.location = (300,300)
+        shader.location = (300, 300)
         img_wrap = contextWrapper.metallic_texture
     elif mapto == 'SPECULARITY':
-        shader.location = (300,0)
-        try:
-            img_wrap = contextWrapper.specular_tint_texture
-            if tint1:
-                img_wrap.node_dst.inputs['Coat Tint'].default_value = tint1[:3] + [1]
-            if tint2:
-                img_wrap.node_dst.inputs['Sheen Tint'].default_value = tint2[:3] + [1]
-        except:
-            img_wrap = contextWrapper.specular_texture
+        shader.location = (300, -600)
+        img_wrap = contextWrapper.specular_tint_texture
     elif mapto == 'ALPHA':
-        shader.location = (-300,0)
+        shader.location = (300, 300)
         img_wrap = contextWrapper.alpha_texture
         img_wrap.use_alpha = False
         links.new(img_wrap.node_image.outputs[0], img_wrap.socket_dst)
     elif mapto == 'EMISSION':
-        shader.location = (0,-900)
+        shader.location = (-450, -600)
         img_wrap = contextWrapper.emission_color_texture
     elif mapto == 'NORMAL':
         shader.location = (300, 300)
         img_wrap = contextWrapper.normalmap_texture
-    elif mapto == 'TEXTURE':
+        img_wrap.node_mapping.name = 'Normal Mapping'
+        image.alpha_mode = 'CHANNEL_PACKED'
+    elif mapto == 'TRANSMISSION':
+        shader.location = (-600, 900)
+        img_wrap = contextWrapper.transmission_texture
+    elif mapto == 'SPECULAR':
+        shader.location = (-150, -300)
+        img_wrap = contextWrapper.specular_texture
+    elif mapto == 'LUMINOUS':
+        shader.location = (-300, -300)
+        img_wrap = contextWrapper.emission_strength_texture
+    elif mapto in {'TEXTURE', 'TEXMASK'}:
+        align = 0 if mapto == 'TEXTURE' else -1
         img_wrap = nodes.new(type='ShaderNodeTexImage')
         img_wrap.label = image.name
-        contextWrapper._grid_to_location(0, 2, dst_node=img_wrap, ref_node=shader)
+        contextWrapper._grid_to_location(align, 2, dst_node=img_wrap, ref_node=shader)
         for node in nodes:
             if node.label == 'Mixer':
+                links.new(node.outputs[0], shader.inputs['Base Color'])
                 spare = node.inputs[1] if node.inputs[1].is_linked is False else node.inputs[2]
-                socket = spare if spare.is_linked is False else node.inputs[0]
+                socket = spare if mapto == 'TEXTURE' else node.inputs[0]
                 links.new(img_wrap.outputs[0], socket)
-            if node.type == 'TEX_COORD':
-                links.new(node.outputs['UV'], img_wrap.inputs[0])
+            if node.name == 'Diffuse Mapping':
+                links.new(node.outputs[0], img_wrap.inputs[0])
         if shader.inputs['Base Color'].is_linked is False:
             links.new(img_wrap.outputs[0], shader.inputs['Base Color'])
+    elif mapto == 'BUMPMASK':
+        normal_map = nodes.get('Normal Map')
+        img_wrap = nodes.new(type='ShaderNodeTexImage')
+        if normal_map:
+            tex_mapping = nodes.get('Normal Mapping')
+            links.new(img_wrap.outputs[0], normal_map.inputs['Strength'])
+            links.new(tex_mapping.outputs[0], img_wrap.inputs[0])
+            tex_mapping.location = (-900, -900)
+            img_wrap.location = (-600, -900)
+    elif mapto == 'SHINMASK':
+        img_wrap = nodes.new(type='ShaderNodeTexImage')
+        links.new(img_wrap.outputs[0], shader.inputs['Sheen Weight'])
+        img_wrap.location = (-1200, 0)
+    elif mapto == 'REFLECTION':
+        img_wrap = nodes.new(type='ShaderNodeTexImage')
+        links.new(img_wrap.outputs[0], shader.inputs['Coat Weight'])
+        img_wrap.location = (-1200, 300)
 
     img_wrap.image = image
     img_wrap.extension = 'REPEAT'
-
-    if mapto != 'TEXTURE':
-        img_wrap.scale = scale
-        img_wrap.translation = offset
-        img_wrap.rotation[2] = angle
 
     if extend == 'mirror':
         img_wrap.extension = 'MIRROR'
@@ -326,16 +353,25 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
     elif extend == 'noWrap':
         img_wrap.extension = 'CLIP'
 
-    if alpha == 'alpha':
-        own_node = img_wrap.node_image
-        contextWrapper.material.blend_method = 'HASHED'
-        links.new(own_node.outputs[1], img_wrap.socket_dst)
-        for link in links:
-            if link.from_node.type == 'TEX_IMAGE' and link.to_node.type == 'MIX_RGB':
-                tex = link.from_node.image.name
+    if mapto not in {'TEXTURE', 'TEXMASK', 'BUMPMASK', 'SHINMASK', 'REFLECTION'}:
+        img_wrap.scale = scale
+        img_wrap.translation = offset
+        img_wrap.rotation[2] = angle
+        if mapto in {'ROUGHNESS', 'METALLIC', 'SPECULARITY'}:
+            if tint1:
+                img_wrap.node_dst.inputs['Coat Tint'].default_value = tint1[:3] + [1]
+            if tint2:
+                img_wrap.node_dst.inputs['Sheen Tint'].default_value = tint2[:3] + [1]
+        if alpha == 'alpha':
+            own_node = img_wrap.node_image
+            primary_tex = nodes.get('Diffuse Texture')
+            contextWrapper.material.blend_method = 'HASHED'
+            links.new(own_node.outputs[1], img_wrap.socket_dst)
+            if primary_tex:
+                tex = primary_tex.image.name
                 own_map = img_wrap.node_mapping
                 if tex == image.name:
-                    links.new(link.from_node.outputs[1], img_wrap.socket_dst)
+                    links.new(primary_tex.outputs[1], img_wrap.socket_dst)
                     try:
                         nodes.remove(own_map)
                         nodes.remove(own_node)
@@ -345,6 +381,11 @@ def add_texture_to_material(image, contextWrapper, pct, extend, alpha, scale, of
                         if imgs.name[-3:].isdigit():
                             if not imgs.users:
                                 bpy.data.images.remove(imgs)
+    else:
+        if img_wrap.inputs[0].is_linked is False:
+            tex_mapping = nodes.get('Texture Coordinate')
+            if tex_mapping:
+                links.new(tex_mapping.outputs['UV'], img_wrap.inputs[0])
 
     shader.location = (300, 300)
     contextWrapper._grid_to_location(1, 0, dst_node=contextWrapper.node_out, ref_node=shader)
@@ -376,6 +417,8 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
     contextMeshMaterials = []
     contextMesh_smooth = None
     contextMeshUV = None
+    contextRender_flag = True
+    contextShadow_flag = True
     contextTrack_flag = False
 
     # TEXTURE_DICT = {}
@@ -398,7 +441,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
     trackposition = {}  # keep track to position for target calculation
 
     def putContextMesh(context, ContextMesh_vertls, ContextMesh_facels, ContextMesh_flag,
-                       ContextMeshMaterials, ContextMesh_smooth):
+                       ContextMeshMaterials, ContextMesh_smooth, ContextRender_flag, ContextShadow_flag):
 
         bmesh = bpy.data.meshes.new(contextObName)
         if ContextMesh_facels is None:
@@ -415,7 +458,6 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             for v1, v2, v3 in ContextMesh_facels:
                 eekadoodle_faces.extend((v3, v1, v2) if v3 == 0 else (v1, v2, v3))
             bmesh.polygons.foreach_set("loop_start", range(0, nbr_faces * 3, 3))
-            bmesh.polygons.foreach_set("loop_total", (3,) * nbr_faces)
             bmesh.loops.foreach_set("vertex_index", eekadoodle_faces)
 
             if bmesh.polygons and contextMeshUV:
@@ -461,23 +503,40 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         context.view_layer.active_layer_collection.collection.objects.link(ob)
         imported_objects.append(ob)
 
+        if not ContextRender_flag:
+            ob.hide_render = True
+        if not ContextShadow_flag:
+            ob.visible_shadow = False
+
         if ContextMesh_flag:
             """Bit 0 (0x1) sets edge CA visible, Bit 1 (0x2) sets edge BC visible and
                Bit 2 (0x4) sets edge AB visible. In Blender we use sharp edges for those flags."""
+            edgesmoothmap = {}
+
             for f, pl in enumerate(bmesh.polygons):
                 face = ContextMesh_facels[f]
                 faceflag = ContextMesh_flag[f]
+                edges = [bmesh.edges[bmesh.loops[pl.loop_start + i].edge_index] for i in range(3)]
                 edge_ab = bmesh.edges[bmesh.loops[pl.loop_start].edge_index]
-                edge_bc = bmesh.edges[bmesh.loops[pl.loop_start + 1].edge_index]
-                edge_ca = bmesh.edges[bmesh.loops[pl.loop_start + 2].edge_index]
+                edge_bc = bmesh.edges[bmesh.loops[pl.loop_start+1].edge_index]
+                edge_ca = bmesh.edges[bmesh.loops[pl.loop_start+2].edge_index]
+
                 if face[2] == 0:
+                    edges = [edges[2], edges[0], edges[1]]
                     edge_ab, edge_bc, edge_ca = edge_ca, edge_ab, edge_bc
-                if faceflag & 0x1:
-                    edge_ca.use_edge_sharp = True
-                if faceflag & 0x2:
-                    edge_bc.use_edge_sharp = True
-                if faceflag & 0x4:
-                    edge_ab.use_edge_sharp = True
+
+                if ContextMesh_smooth:
+                    for edge in edges:
+                        if edge.index in edgesmoothmap:
+                            if (edgesmoothmap[edge.index] & ContextMesh_smooth[f]) == 0:
+                                if faceflag & 0x1:
+                                    edge_ca.use_edge_sharp = True
+                                if faceflag & 0x2:
+                                    edge_bc.use_edge_sharp = True
+                                if faceflag & 0x4:
+                                    edge_ab.use_edge_sharp = True
+                        else:
+                            edgesmoothmap[edge.index] = ContextMesh_smooth[f]
 
         if ContextMesh_smooth:
             for f, pl in enumerate(bmesh.polygons):
@@ -525,13 +584,14 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         temp_chunk.bytes_read += 3
         return [float(col) / 255 for col in struct.unpack('<3B', temp_data)]
 
-    def read_texture(new_chunk, temp_chunk, name, mapto):
+    def read_texture(new_chunk, temp_chunk, mapto):
         uscale, vscale, uoffset, voffset, angle = 1.0, 1.0, 0.0, 0.0, 0.0
         contextWrapper.use_nodes = True
         tint1 = tint2 = None
+        luma = 'normal'
         extend = 'wrap'
         alpha = False
-        pct = 70
+        pct = 100
 
         contextWrapper.base_color = contextColor[:]
         contextWrapper.metallic = contextMaterial.metallic
@@ -552,16 +612,14 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             elif temp_chunk.ID == MAT_MAP_FILEPATH:
                 texture_name, read_str_len = read_string(file)
                 img = load_image(texture_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
+                if img and img.depth in {32, 16}:
+                    luma = 'alpha'
                 temp_chunk.bytes_read += read_str_len  # plus one for the null character that gets removed
 
             elif temp_chunk.ID == MAT_BUMP_PERCENT:
                 contextWrapper.normalmap_strength = (float(read_short(temp_chunk) / 100))
             elif mapto in {'COLOR', 'SPECULARITY'} and temp_chunk.ID == MAT_MAP_TEXBLUR:
-                sheen = float(read_float(temp_chunk))
-                try:
-                    contextWrapper.node_principled_bsdf.inputs['Sheen Weight'].default_value = sheen
-                except:
-                    contextWrapper.node_principled_bsdf.inputs['Sheen'].default_value = sheen
+                contextWrapper.node_principled_bsdf.inputs['Sheen Weight'].default_value = float(read_float(temp_chunk))
 
             elif temp_chunk.ID == MAT_MAP_TILING:
                 """Control bit flags, 0x1 activates decaling, 0x2 activates mirror, 0x8 activates inversion,
@@ -583,11 +641,11 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                 if tiling & 0x40:
                     alpha = 'alpha'
                 if tiling & 0x80:
-                    tint = 'tint'
+                    luma = 'tint'
                 if tiling & 0x100:
-                    tint = 'noAlpha'
+                    luma = 'noAlpha'
                 if tiling & 0x200:
-                    tint = 'RGBtint'
+                    luma = 'RGBtint'
 
             elif temp_chunk.ID == MAT_MAP_USCALE:
                 uscale = read_float(temp_chunk)
@@ -610,7 +668,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         # add the map to the material in the right channel
         if img:
             add_texture_to_material(img, contextWrapper, pct, extend, alpha, (uscale, vscale, 1),
-                                    (uoffset, voffset, 0), angle, tint1, tint2, mapto)
+                                    (uoffset, voffset, 0), angle, luma, tint1, tint2, mapto)
 
     def apply_constrain(vec):
         convector = mathutils.Vector.Fill(3, (CONSTRAIN * 0.1))
@@ -850,19 +908,19 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
                     contextWrapper.use_nodes = True
 
         elif new_chunk.ID == MAT_TEXTURE_MAP:
-            read_texture(new_chunk, temp_chunk, "Diffuse", 'COLOR')
+            read_texture(new_chunk, temp_chunk, 'COLOR')
 
         elif new_chunk.ID == MAT_SPECULAR_MAP:
-            read_texture(new_chunk, temp_chunk, "Specular", 'SPECULARITY')
+            read_texture(new_chunk, temp_chunk, 'SPECULARITY')
 
         elif new_chunk.ID == MAT_OPACITY_MAP:
-            read_texture(new_chunk, temp_chunk, "Opacity", 'ALPHA')
+            read_texture(new_chunk, temp_chunk, 'ALPHA')
 
         elif new_chunk.ID == MAT_REFLECTION_MAP:
-            read_texture(new_chunk, temp_chunk, "Reflect", 'METALLIC')
+            read_texture(new_chunk, temp_chunk, 'METALLIC')
 
         elif new_chunk.ID == MAT_BUMP_MAP:
-            read_texture(new_chunk, temp_chunk, "Bump", 'NORMAL')
+            read_texture(new_chunk, temp_chunk, 'NORMAL')
 
         elif new_chunk.ID == MAT_BUMP_PERCENT:
             read_chunk(file, temp_chunk)
@@ -875,13 +933,34 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             new_chunk.bytes_read += temp_chunk.bytes_read
 
         elif new_chunk.ID == MAT_SHIN_MAP:
-            read_texture(new_chunk, temp_chunk, "Shininess", 'ROUGHNESS')
+            read_texture(new_chunk, temp_chunk, 'ROUGHNESS')
 
         elif new_chunk.ID == MAT_SELFI_MAP:
-            read_texture(new_chunk, temp_chunk, "Emit", 'EMISSION')
+            read_texture(new_chunk, temp_chunk, 'EMISSION')
 
         elif new_chunk.ID == MAT_TEX2_MAP:
-            read_texture(new_chunk, temp_chunk, "Tex", 'TEXTURE')
+            read_texture(new_chunk, temp_chunk, 'TEXTURE')
+
+        elif new_chunk.ID == MAT_TEX_MASK:
+            read_texture(new_chunk, temp_chunk, 'TEXMASK')
+
+        elif new_chunk.ID == MAT_OPAC_MASK:
+            read_texture(new_chunk, temp_chunk, 'TRANSMISSION')
+
+        elif new_chunk.ID == MAT_BUMP_MASK:
+            read_texture(new_chunk, temp_chunk, 'BUMPMASK')
+
+        elif new_chunk.ID == MAT_SHIN_MASK:
+            read_texture(new_chunk, temp_chunk, 'SHINMASK')
+
+        elif new_chunk.ID == MAT_SPEC_MASK:
+            read_texture(new_chunk, temp_chunk, 'SPECULAR')
+
+        elif new_chunk.ID == MAT_SELFI_MASK:
+            read_texture(new_chunk, temp_chunk, 'LUMINOUS')
+
+        elif new_chunk.ID == MAT_REFL_MASK:
+            read_texture(new_chunk, temp_chunk, 'REFLECTION')
 
         # If cursor location
         elif CURSOR and new_chunk.ID == O_CONSTS:
@@ -1159,11 +1238,13 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif new_chunk.ID == OBJECT:
             if CreateBlenderObject:
                 putContextMesh(context, contextMesh_vertls, contextMesh_facels, contextMesh_flag,
-                               contextMeshMaterials, contextMesh_smooth)
+                               contextMeshMaterials, contextMesh_smooth, contextRender_flag, contextShadow_flag)
 
                 contextMesh_vertls = []
                 contextMesh_facels = []
                 contextMeshMaterials = []
+                contextRender_flag = True
+                contextShadow_flag = True
                 contextMesh_flag = None
                 contextMesh_smooth = None
                 contextMeshUV = None
@@ -1221,6 +1302,11 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
             matrix = mathutils.Matrix((mtx[:3]+[0], mtx[3:6]+[0], mtx[6:9]+[0], mtx[9:]+[1])).transposed()
             matrix_dictionary[contextObName] = matrix
 
+        elif CreateMesh and new_chunk.ID == OBJECT_NOLOFTER:
+            contextRender_flag = False
+        elif CreateMesh and new_chunk.ID == OBJECT_NOSHADOW:
+            contextShadow_flag = False
+
         # If hierarchy chunk
         elif CreateMesh and new_chunk.ID == OBJECT_HIERARCHY:
             child_id = get_hierarchy(new_chunk)
@@ -1269,7 +1355,10 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_SHADOWED:  # Shadow flag
             contextLamp.data.use_shadow = True
         elif CreateLightObject and new_chunk.ID == LIGHT_LOCAL_SHADOW2:  # Shadow parameters
-            contextLamp.data.shadow_buffer_bias = read_float(new_chunk)
+            if contextLamp.data.get('shadow_buffer_bias') is not None:
+                contextLamp.data.shadow_buffer_bias = read_float(new_chunk)
+            else:
+                read_float(new_chunk)
             contextLamp.data.shadow_buffer_clip_start = (read_float(new_chunk) * 0.1)
             temp_data = file.read(SZ_U_SHORT)
             new_chunk.bytes_read += SZ_U_SHORT
@@ -1486,10 +1575,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         elif new_chunk.ID == MORPH_SMOOTH and tracking == 'OBJECT':  # Smooth angle
             smooth_angle = read_float(new_chunk)
             if child.data is not None:  # Check if child is a dummy
-                try:
-                    child.data.set_sharp_from_angle(angle=smooth_angle)
-                except:
-                    child.data.auto_smooth_angle = smooth_angle
+                child.data.set_sharp_from_angle(angle=smooth_angle)
 
         elif KEYFRAME and new_chunk.ID == COL_TRACK_TAG and tracking == 'AMBIENT':  # Ambient
             keyframe_data = {}
@@ -1689,7 +1775,7 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
     # FINISHED LOOP - There will be a number of objects still not added
     if CreateBlenderObject:
         putContextMesh(context, contextMesh_vertls, contextMesh_facels, contextMesh_flag,
-                       contextMeshMaterials, contextMesh_smooth)
+                       contextMeshMaterials, contextMesh_smooth, contextRender_flag, contextShadow_flag)
 
     # If hierarchy
     hierarchy = dict(zip(childs_list, parent_list))
@@ -1731,7 +1817,10 @@ def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAI
         trans_matrix = matrix_dictionary.get(ob.name, mathutils.Matrix())
         pivot_matrix = mathutils.Matrix.Translation(trans_matrix.to_3x3() @ -pivot)
         if APPLY_MATRIX and ob.type == 'MESH':
-            ob.data.transform(trans_matrix.inverted() @ pivot_matrix)
+            try:
+                ob.data.transform(trans_matrix.inverted() @ pivot_matrix)
+            except:
+                pass
 
 
 ##########
@@ -1864,23 +1953,27 @@ def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
     file.close()
 
 
-def load(operator, context, files=None, directory="", filepath="", constrain_size=0.0,
+def load(operator, context, files=[], directory="", filepath="", constrain_size=0.0,
          use_scene_unit=False, use_image_search=True, object_filter=None, use_keyframes=True,
          use_apply_transform=True, global_matrix=None, use_cursor=False, use_collection=False):
 
     # Get the active collection
     collection_init = context.view_layer.active_layer_collection.collection
 
-    # Load each selected file
+    # Load selected file
+    if not len(files):
+        files = [Path(filepath)]
+        directory = Path(filepath).parent
+
     for file in files:
-        # Create new collections if activated (collection name = 3ds file name)
-        if use_collection: 
+        if use_collection:
+            # Create new collections if activated (collection name = 3ds file name)
             collection = bpy.data.collections.new(Path(file.name).stem)
             context.scene.collection.children.link(collection)
             context.view_layer.active_layer_collection = context.view_layer.layer_collection.children[collection.name]
         load_3ds(Path(directory, file.name), context, CONSTRAIN=constrain_size, UNITS=use_scene_unit,
-             IMAGE_SEARCH=use_image_search, FILTER=object_filter, KEYFRAME=use_keyframes,
-             APPLY_MATRIX=use_apply_transform, CONVERSE=global_matrix, CURSOR=use_cursor,)
+                 IMAGE_SEARCH=use_image_search, FILTER=object_filter, KEYFRAME=use_keyframes,
+                 APPLY_MATRIX=use_apply_transform, CONVERSE=global_matrix, CURSOR=use_cursor,)
 
     # Retrive the initial collection as active
     active = context.view_layer.layer_collection.children.get(collection_init.name)
