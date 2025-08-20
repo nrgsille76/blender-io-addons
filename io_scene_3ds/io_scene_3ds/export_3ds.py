@@ -1177,7 +1177,7 @@ def make_kfdata(revision, start=0, stop=100, curtime=0):
 
     kfhdr = _3ds_chunk(KFDATA_KFHDR)
     kfhdr.add_variable("revision", _3ds_ushort(revision))
-    kfhdr.add_variable("filename", _3ds_string(b'Blender'))
+    kfhdr.add_variable("filename", _3ds_string(b'NRGSille'))
     kfhdr.add_variable("animlen", _3ds_uint(stop - start))
 
     kfseg = _3ds_chunk(KFDATA_KFSEG)
@@ -1627,8 +1627,9 @@ def make_ambient_node(world):
 # EXPORT #
 ##########
 
-def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, global_matrix=None, use_selection=False,
-             use_apply_transform=True, object_filter=None, use_keyframes=True, use_hierarchy=False, use_cursor=False):
+def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, global_matrix=None,
+             use_selection=False, use_apply_transform=True, object_filter=None, use_invisible=False,
+             use_keyframes=True, use_hierarchy=False, use_cursor=False):
     """Save the Blender scene to a 3ds file."""
 
     # Time the export
@@ -1688,10 +1689,16 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
         object_filter.update(OTHERS)
         EMPTYS.update(DUMMYS)
 
-    if use_selection:
+    if use_selection and use_invisible:
+        objects = [ob for ob in items if ob.type in object_filter and ob.hide_get(view_layer=layer) and ob.select_get(view_layer=layer)]
+    elif use_selection and not use_invisible:
         objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer) and ob.select_get(view_layer=layer)]
-    else:
+    elif not use_selection and not use_invisible:
         objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer)]
+    elif use_invisible and not use_selection:
+        objects = [ob for ob in items if ob.type in object_filter and ob.hide_get(view_layer=layer)]
+    else:
+        objects = [ob for ob in items if ob.type in object_filter]
 
     empty_objects = [ob for ob in objects if ob.type in EMPTYS]
     light_objects = [ob for ob in objects if ob.type == 'LIGHT']
@@ -1719,9 +1726,8 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
                     data = None
 
             if data:
-                matrix = mtx_scale @ mtx @ global_matrix
-                if use_apply_transform:
-                    data.transform(matrix)
+                matrix = mtx @ global_matrix if use_apply_transform else global_matrix
+                data.transform(mtx_scale @ matrix)
                 mesh_objects.append((ob_derived, data, matrix))
                 ma_ls = data.materials
                 ma_ls_len = len(ma_ls)
@@ -2118,9 +2124,9 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
     # primary.dump()
 
 
-def save(operator, context, filepath="", collection="", scale_factor=1.0, use_scene_unit=False,
-         use_selection=False, object_filter=None, use_apply_transform=True, use_keyframes=True,
-         use_hierarchy=False, use_collection=False, global_matrix=None, use_cursor=False):
+def save(operator, context, filepath="", collection="", scale_factor=1.0, use_scene_unit=False, use_selection=False,
+         object_filter=None, use_apply_transform=True, use_invisible=False, use_keyframes=True, use_hierarchy=False,
+         use_collection=False, global_matrix=None, use_cursor=False):
 
     unit_measure = 1.0
     if use_scene_unit:
@@ -2153,6 +2159,6 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
             items = item_collection.all_objects
 
     save_3ds(context, filepath, collection, items, masterscale, global_matrix, use_selection,
-             use_apply_transform, object_filter, use_keyframes, use_hierarchy, use_cursor)
+             use_apply_transform, object_filter, use_invisible, use_keyframes, use_hierarchy, use_cursor)
 
     return {'FINISHED'}
