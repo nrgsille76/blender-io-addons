@@ -219,6 +219,11 @@ class Export3DS(bpy.types.Operator, ExportHelper):
         description="Apply matrix transform before export",
         default=True,
     )
+    use_invisible: BoolProperty(
+        name="Invisible",
+        description="Export invisible objects",
+        default=False,
+    )
     use_keyframes: BoolProperty(
         name="Animation",
         description="Write the keyframe data",
@@ -272,6 +277,9 @@ def export_include(layout, operator, browser):
             line = body.row(align=True)
             line.prop(operator, "use_selection")
             line.label(text="", icon='RESTRICT_SELECT_OFF' if operator.use_selection else 'RESTRICT_SELECT_ON')
+        line = body.row(align=True)
+        line.prop(operator, "use_invisible")
+        line.label(text="", icon='HIDE_OFF' if operator.use_invisible else 'HIDE_ON')
         body.column().prop(operator, "object_filter")
         line = body.row(align=True)
         line.prop(operator, "use_keyframes")
