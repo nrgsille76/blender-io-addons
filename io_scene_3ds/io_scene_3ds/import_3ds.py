@@ -3,39 +3,33 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-import os
+"""
+Exporting is based on 3ds loader from www.gametutorials.com(Thanks DigiBen) and using information
+from the lib3ds project (http://lib3ds.sourceforge.net/) sourcecode.
+"""
+
 import bpy
 import time
 import math
 import struct
 import mathutils
-from bpy_extras.image_utils import load_image
-from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
+import bpy_extras
 from pathlib import Path
-
-BOUNDS_3DS = []
+from bpy_extras import node_shader_utils
 
 ###################
 # Data Structures #
 ###################
 
-# Some of the chunks that we will see
+# Some of the chunks that we will export
 # >----- Primary Chunk, at the beginning of each file
 PRIMARY = 0x4D4D
 
 # >----- Main Chunks
-OBJECTINFO = 0x3D3D  # This gives the version of the mesh and is found right before the material and object information
+OBJECTINFO = 0x3D3D  # Main mesh object chunk before material and object information
+MESHVERSION = 0x3D3E  # This gives the version of the mesh
 VERSION = 0x0002  # This gives the version of the .3ds file
-EDITKEYFRAME = 0xB000  # This is the header for all of the key frame info
-
-# >----- Data Chunks, used for various attributes
-COLOR_F = 0x0010  # color defined as 3 floats
-COLOR_24 = 0x0011  # color defined as 3 bytes
-LIN_COLOR_24 = 0x0012  # linear byte color
-LIN_COLOR_F = 0x0013  # linear float color
-PCT_SHORT = 0x0030  # percentage short
-PCT_FLOAT = 0x0031  # percentage float
-MASTERSCALE = 0x0100  # Master scale factor
+KFDATA = 0xB000  # This is the header for all of the keyframe info
 
 # >----- sub defines of OBJECTINFO
 BITMAP = 0x1100  # The background image name
@@ -48,70 +42,71 @@ O_CONSTS = 0x1500  # The origin of the 3D cursor
 AMBIENTLIGHT = 0x2100  # The color of the ambient light
 FOG = 0x2200  # The fog atmosphere settings
 USE_FOG = 0x2201  # The fog atmosphere flag
-FOG_BGND = 0x2210  # The fog atmosphere background flag
 DISTANCE_CUE = 0x2300  # The distance cue atmosphere settings
 USE_DISTANCE_CUE = 0x2301  # The distance cue atmosphere flag
 LAYER_FOG = 0x2302  # The fog layer atmosphere settings
 USE_LAYER_FOG = 0x2303  # The fog layer atmosphere flag
-DCUE_BGND = 0x2310  # The distance cue background flag
-MATERIAL = 0xAFFF  # This stored the texture info
-OBJECT = 0x4000  # This stores the faces, vertices, etc...
+MATERIAL = 45055  # 0xAFFF // This stored the texture info
+OBJECT = 16384  # 0x4000 // This stores the faces, vertices, etc...
 
 # >------ sub defines of MATERIAL
-MAT_NAME = 0xA000  # This holds the material name
-MAT_AMBIENT = 0xA010  # Ambient color of the object/material
-MAT_DIFFUSE = 0xA020  # This holds the color of the object/material
-MAT_SPECULAR = 0xA030  # Specular color of the object/material
-MAT_SHINESS = 0xA040  # Roughness of the object/material (percent)
-MAT_SHIN2 = 0xA041  # Shininess of the object/material (percent)
-MAT_SHIN3 = 0xA042  # Reflection of the object/material (percent)
-MAT_TRANSPARENCY = 0xA050  # Transparency value of material (percent)
-MAT_XPFALL = 0xA052  # Transparency falloff value
-MAT_REFBLUR = 0xA053  # Reflection blurring value
-MAT_SELF_ILLUM = 0xA080  # # Material self illumination flag
-MAT_TWO_SIDE = 0xA081  # Material is two sided flag
-MAT_DECAL = 0xA082  # Material mapping is decaled flag
-MAT_ADDITIVE = 0xA083  # Material has additive transparency flag
-MAT_SELF_ILPCT = 0xA084  # Self illumination strength (percent)
-MAT_WIRE = 0xA085  # Material wireframe rendered flag
-MAT_FACEMAP = 0xA088  # Face mapped textures flag
-MAT_PHONGSOFT = 0xA08C  # Phong soften material flag
-MAT_WIREABS = 0xA08E  # Wire size in units flag
-MAT_WIRESIZE = 0xA087  # Rendered wire size in pixels
-MAT_SHADING = 0xA100  # Material shading method
-MAT_USE_XPFALL = 0xA240  # Transparency falloff flag
-MAT_USE_REFBLUR = 0xA250  # Reflection blurring flag
+MATNAME = 0xA000  # This holds the material name
+MATAMBIENT = 0xA010  # Ambient color of the object/material
+MATDIFFUSE = 0xA020  # This holds the color of the object/material
+MATSPECULAR = 0xA030  # Specular color of the object/material
+MATSHINESS = 0xA040  # Specular intensity of the object/material (percent)
+MATSHIN2 = 0xA041  # Reflection of the object/material (percent)
+MATSHIN3 = 0xA042  # metallic/mirror of the object/material (percent)
+MATTRANS = 0xA050  # Transparency value (100-OpacityValue) (percent)
+MATXPFALL = 0xA052  # Transparency falloff ratio (percent)
+MATREFBLUR = 0xA053  # Reflection blurring ratio (percent)
+MATSELFILLUM = 0xA080  # # Material self illumination flag
+MATSELFILPCT = 0xA084  # Self illumination strength (percent)
+MATWIRE = 0xA085  # Material wireframe rendered flag
+MATFACEMAP = 0xA088  # Face mapped textures flag
+MATPHONGSOFT = 0xA08C  # Phong soften material flag
+MATWIREABS = 0xA08E  # Wire size in units flag
+MATWIRESIZE = 0xA087  # Rendered wire size in pixels
+MATSHADING = 0xA100  # Material shading method
 
-# >------ sub defines of MATERIAL_MAP
-MAT_TEXTURE_MAP = 0xA200  # This is a header for a new texture map
-MAT_SPECULAR_MAP = 0xA204  # This is a header for a new specular map
-MAT_OPACITY_MAP = 0xA210  # This is a header for a new opacity map
-MAT_REFLECTION_MAP = 0xA220  # This is a header for a new reflection map
-MAT_BUMP_MAP = 0xA230  # This is a header for a new bump map
+# >------ sub defines of MAT_MAP
+MAT_DIFFUSEMAP = 0xA200  # Header for diffuse texture
+MAT_SPECMAP = 0xA204  # Header for specularity map
+MAT_OPACMAP = 0xA210  # Header for opacity map
+MAT_REFLMAP = 0xA220  # Header for reflect map
+MAT_BUMPMAP = 0xA230  # Header for normal map
 MAT_BUMP_PERCENT = 0xA252  # Normalmap strength (percent)
-MAT_TEX2_MAP = 0xA33A  # This is a header for a secondary texture
-MAT_SHIN_MAP = 0xA33C  # This is a header for a new roughness map
-MAT_SELFI_MAP = 0xA33D  # This is a header for a new emission map
-MAT_TEX_MASK = 0xA33E  # This is a header for a new texture mask
-MAT_OPAC_MASK = 0xA342  # This is a header for a new opacity mask
-MAT_BUMP_MASK = 0xA344  # This is a header for a new normal mask
-MAT_SHIN_MASK = 0xA346  # This is a header for a new shininess mask
-MAT_SPEC_MASK = 0xA348  # This is a header for a new specular mask
-MAT_SELFI_MASK = 0xA34A  # This is a header for a new emission mask
-MAT_REFL_MASK = 0xA34C  # This is a header for a new reflection mask
-MAT_MAP_FILEPATH = 0xA300  # This holds the file name of the texture
-MAT_MAP_TILING = 0xA351  # 2nd bit (from LSB) is mirror UV flag
-MAT_MAP_TEXBLUR = 0xA353  # Texture blurring factor (float 0-1)
-MAT_MAP_USCALE = 0xA354  # U axis scaling
-MAT_MAP_VSCALE = 0xA356  # V axis scaling
+MAT_TEX2MAP = 0xA33A  # Header for secondary texture
+MAT_SHINMAP = 0xA33C  # Header for roughness map
+MAT_SELFIMAP = 0xA33D  # Header for emission map
+MAT_TEXMASK = 0xA33E  # Header for texture mask
+MAT_OPACMASK = 0xA342  # Header for opacity mask
+MAT_BUMPMASK = 0xA344  # Header for normal mask
+MAT_SHINMASK = 0xA346  # Header for shininess mask
+MAT_SPECMASK = 0xA348  # Header for specular mask
+MAT_SELFIMASK = 0xA34A  # Header for emission mask
+MAT_REFLMASK = 0xA34C  # Header for reflection mask
+MAT_MAP_FILE = 0xA300  # This holds the file name of a texture
+MAT_MAP_TILING = 0xa351   # 2nd bit (from LSB) is mirror UV flag
+MAT_MAP_TEXBLUR = 0xA353  # Texture blurring factor
+MAT_MAP_USCALE = 0xA354   # U axis scaling
+MAT_MAP_VSCALE = 0xA356   # V axis scaling
 MAT_MAP_UOFFSET = 0xA358  # U axis offset
 MAT_MAP_VOFFSET = 0xA35A  # V axis offset
 MAT_MAP_ANG = 0xA35C  # UV rotation around the z-axis in rad
-MAT_MAP_COL1 = 0xA360  # Map Color1
-MAT_MAP_COL2 = 0xA362  # Map Color2
-MAT_MAP_RCOL = 0xA364  # Red mapping
-MAT_MAP_GCOL = 0xA366  # Green mapping
-MAT_MAP_BCOL = 0xA368  # Blue mapping
+MAP_COL1 = 0xA360  # Tint Color1
+MAP_COL2 = 0xA362  # Tint Color2
+MAP_RCOL = 0xA364  # Red tint
+MAP_GCOL = 0xA366  # Green tint
+MAP_BCOL = 0xA368  # Blue tint
+
+RGB = 0x0010  # RGB float Color1
+RGB1 = 0x0011  # RGB int Color1
+RGBI = 0x0012  # RGB int Color2
+RGBF = 0x0013  # RGB float Color2
+PCT = 0x0030  # Percent chunk
+PCTF = 0x0031  # Percent float
+MASTERSCALE = 0x0100  # Master scale factor
 
 # >------ sub defines of OBJECT
 OBJECT_NOLOFTER = 0x4011  # Object doesnt render flag
@@ -119,31 +114,23 @@ OBJECT_NOSHADOW = 0x4012  # Object doesnt cast shadows flag
 OBJECT_MESH = 0x4100  # This lets us know that we are reading a new object
 OBJECT_LIGHT = 0x4600  # This lets us know we are reading a light object
 OBJECT_CAMERA = 0x4700  # This lets us know we are reading a camera object
-OBJECT_HIERARCHY = 0x4F00  # This lets us know the hierachy id of the object
-OBJECT_PARENT = 0x4F10  # This lets us know the parent id of the object
+OBJECT_HIERARCHY = 0x4F00  # Hierarchy id of the object
+OBJECT_PARENT = 0x4F10  # Parent id of the object
 
 # >------ Sub defines of LIGHT
+LIGHT_MULTIPLIER = 0x465B  # The light energy factor
+LIGHT_INNER_RANGE = 0x4659  # Light inner range value
+LIGHT_OUTER_RANGE = 0x465A  # Light outer range value
+LIGHT_ATTENUATE = 0x4625  # Light attenuation flag
 LIGHT_SPOTLIGHT = 0x4610  # The target of a spotlight
-LIGHT_OFF = 0x4620  # The light is off
-LIGHT_ATTENUATE = 0x4625  # Light attenuate flag
-LIGHT_RAYSHADE = 0x4627  # Light rayshading flag
+LIGHT_SPOT_ROLL = 0x4656  # Light spot roll angle
 LIGHT_SPOT_SHADOWED = 0x4630  # Light spot shadow flag
-LIGHT_LOCAL_SHADOW = 0x4640  # Light shadow values 1
-LIGHT_LOCAL_SHADOW2 = 0x4641  # Light shadow values 2
-LIGHT_SPOT_SEE_CONE = 0x4650  # Light spot cone flag
+LIGHT_SPOT_LSHADOW = 0x4641  # Light spot shadow parameters
+LIGHT_SPOT_SEE_CONE = 0x4650  # Light spot show cone flag
 LIGHT_SPOT_RECTANGLE = 0x4651  # Light spot rectangle flag
 LIGHT_SPOT_OVERSHOOT = 0x4652  # Light spot overshoot flag
-LIGHT_SPOT_PROJECTOR = 0x4653  # Light spot bitmap name
-LIGHT_EXCLUDE = 0x4654  # Light excluded objects
-LIGHT_RANGE = 0x4655  # Light range
-LIGHT_SPOT_ROLL = 0x4656  # The roll angle of the spot
-LIGHT_SPOT_ASPECT = 0x4657  # Light spot aspect flag
-LIGHT_RAY_BIAS = 0x4658  # Light ray bias value
-LIGHT_INNER_RANGE = 0x4659  # The light inner range
-LIGHT_OUTER_RANGE = 0x465A  # The light outer range
-LIGHT_MULTIPLIER = 0x465B  # The light energy factor
-LIGHT_ATTENUATE = 0x4625  # Light attenuation flag
-LIGHT_AMBIENT_LIGHT = 0x4680  # Light ambient flag
+LIGHT_SPOT_PROJECTOR = 0x4653  # Light spot projection bitmap
+LIGHT_SPOT_ASPECT = 0x4657  # Light spot aspect ratio
 
 # >------ sub defines of CAMERA
 OBJECT_CAM_RANGES = 0x4720  # The camera range values
@@ -152,1832 +139,2028 @@ OBJECT_CAM_RANGES = 0x4720  # The camera range values
 OBJECT_VERTICES = 0x4110  # The objects vertices
 OBJECT_VERTFLAGS = 0x4111  # The objects vertex flags
 OBJECT_FACES = 0x4120  # The objects faces
-OBJECT_MATERIAL = 0x4130  # The objects face material
-OBJECT_UV = 0x4140  # The vertex UV texture coordinates
-OBJECT_SMOOTH = 0x4150  # The objects face smooth groups
-OBJECT_TRANS_MATRIX = 0x4160  # The objects Matrix
+OBJECT_MATERIAL = 0x4130  # This is found if the object has a material, either texture map or color
+OBJECT_UV = 0x4140  # The UV texture coordinates
+OBJECT_SMOOTH = 0x4150  # The objects smooth groups
+OBJECT_TRANS_MATRIX = 0x4160  # The Object Matrix
 
-# >------ sub defines of EDITKEYFRAME
-KF_AMBIENT = 0xB001  # Keyframe ambient node
-KF_OBJECT = 0xB002  # Keyframe object node
-KF_OBJECT_CAMERA = 0xB003  # Keyframe camera node
-KF_TARGET_CAMERA = 0xB004  # Keyframe target node
-KF_OBJECT_LIGHT = 0xB005  # Keyframe light node
-KF_TARGET_LIGHT = 0xB006  # Keyframe light target node
-KF_OBJECT_SPOT_LIGHT = 0xB007  # Keyframe spotlight node
-KFDATA_KFSEG = 0xB008  # Keyframe start and stop
-KFDATA_CURTIME = 0xB009  # Keyframe current frame
-KFDATA_KFHDR = 0xB00A  # Keyframe node header
+# >------ sub defines of KFDATA
+AMBIENT_NODE_TAG = 0xB001  # Ambient node tag
+OBJECT_NODE_TAG = 0xB002  # Object tree tag
+CAMERA_NODE_TAG = 0xB003  # Camera object tag
+TARGET_NODE_TAG = 0xB004  # Camera target tag
+LIGHT_NODE_TAG = 0xB005  # Light object tag
+LTARGET_NODE_TAG = 0xB006  # Light target tag
+SPOT_NODE_TAG = 0xB007  # Spotlight tag
+KFDATA_KFSEG = 0xB008  # Frame start & end
+KFDATA_KFCURTIME = 0xB009  # Frame current
+KFDATA_KFHDR = 0xB00A  # Keyframe header
 
-# >------ sub defines of KEYFRAME_NODE
-OBJECT_NODE_HDR = 0xB010  # Keyframe object node header
-OBJECT_INSTANCE_NAME = 0xB011  # Keyframe object name for dummy objects
-OBJECT_PRESCALE = 0xB012  # Keyframe object prescale
-OBJECT_PIVOT = 0xB013  # Keyframe object pivot position
-OBJECT_BOUNDBOX = 0xB014  # Keyframe object boundbox
-MORPH_SMOOTH = 0xB015  # Auto smooth angle for keyframe mesh objects
-POS_TRACK_TAG = 0xB020  # Keyframe object position track
-ROT_TRACK_TAG = 0xB021  # Keyframe object rotation track
-SCL_TRACK_TAG = 0xB022  # Keyframe object scale track
-FOV_TRACK_TAG = 0xB023  # Keyframe camera field of view track
-ROLL_TRACK_TAG = 0xB024  # Keyframe camera roll track
-COL_TRACK_TAG = 0xB025  # Keyframe light color track
-MORPH_TRACK_TAG = 0xB026  # Keyframe object morph smooth track
-HOTSPOT_TRACK_TAG = 0xB027  # Keyframe spotlight hotspot track
-FALLOFF_TRACK_TAG = 0xB028  # Keyframe spotlight falloff track
-HIDE_TRACK_TAG = 0xB029  # Keyframe object hide track
-OBJECT_NODE_ID = 0xB030  # Keyframe object node id
-PARENT_NAME = 0x80F0  # Object parent name tree (dot seperated)
-ROOT_OBJECT = 0xFFFF
+# >------ sub defines of OBJECT_NODE_TAG
+OBJECT_NODE_ID = 0xB030  # Object hierachy ID
+OBJECT_NODE_HDR = 0xB010  # Hierachy tree header
+OBJECT_INSTANCE_NAME = 0xB011  # Object instance name
+OBJECT_PARENT_NAME = 0x80F0  # Object parent name
+OBJECT_PIVOT = 0xB013  # Object pivot position
+OBJECT_BOUNDBOX = 0xB014  # Object boundbox
+OBJECT_MORPH_SMOOTH = 0xB015  # Object smooth angle
+POS_TRACK_TAG = 0xB020  # Position transform tag
+ROT_TRACK_TAG = 0xB021  # Rotation transform tag
+SCL_TRACK_TAG = 0xB022  # Scale transform tag
+FOV_TRACK_TAG = 0xB023  # Field of view tag
+ROLL_TRACK_TAG = 0xB024  # Roll transform tag
+COL_TRACK_TAG = 0xB025  # Color transform tag
+HOTSPOT_TRACK_TAG = 0xB027  # Hotspot transform tag
+FALLOFF_TRACK_TAG = 0xB028  # Falloff transform tag
+ROOT_OBJECT = 0xFFFF  # Root object
 
-global scn
-scn = None
+EMPTYS = {'EMPTY'}
+DUMMYS = {'ARMATURE', 'LATTICE', 'SPEAKER', 'VOLUME'}
+OTHERS = {'CURVE', 'SURFACE', 'FONT', 'META'}
 
-object_dictionary = {}
-parent_dictionary = {}
-matrix_dictionary = {}
+# So 3ds max can open files, limit names to 12 in length, this is very annoying for filenames!
+name_unique = []  # stores str, ascii only
+name_mapping = {}  # stores {orig: byte} mapping
+
+def sane_name(name):
+    name_fixed = name_mapping.get(name)
+    if name_fixed is not None:
+        return name_fixed
+
+    # Strip non ascii chars
+    new_name_clean = new_name = name.encode("ASCII", "replace").decode("ASCII")[:36]
+    i = 0
+
+    while new_name in name_unique:
+        new_name = new_name_clean + '.%.3d' % i
+        i += 1
+
+    # Note, appending the 'str' version
+    name_unique.append(new_name)
+    name_mapping[name] = new_name = new_name.encode("ASCII", "replace")
+    return new_name
 
 
-class Chunk(object):
+def clamp_values(val, minv, maxv):
+    if hasattr(val, "__iter__"):
+        return tuple(max(minv, min(maxv, v)) for v in val)
+    else:
+        return max(minv, min(maxv, val))
 
-    __slots__ = "ID", "length", "bytes_read"
 
-    # we don't read in the bytes_read, we compute that
-    binary_format = '<HI'
+def uv_key(uv):
+    return round(uv[0], 6), round(uv[1], 6)
+
+
+# Size defines
+SZ_SHORT = 2
+SZ_INT = 4
+SZ_FLOAT = 4
+
+class _3ds_ushort(object):
+    """Class representing a short (2-byte integer) for a 3ds file."""
+    __slots__ = ("value", )
+
+    def __init__(self, val=0):
+        self.value = val
+
+    def get_size(self):
+        return SZ_SHORT
+
+    def write(self, file):
+        file.write(struct.pack('<H', self.value))
+
+    def __str__(self):
+        return str(self.value)
+
+
+class _3ds_uint(object):
+    """Class representing an int (4-byte integer) for a 3ds file."""
+    __slots__ = ("value", )
+
+    def __init__(self, val):
+        self.value = val
+
+    def get_size(self):
+        return SZ_INT
+
+    def write(self, file):
+        file.write(struct.pack('<I', self.value))
+
+    def __str__(self):
+        return str(self.value)
+
+
+class _3ds_float(object):
+    """Class representing a 4-byte IEEE floating point number for a 3ds file."""
+    __slots__ = ("value", )
+
+    def __init__(self, val):
+        self.value = val
+
+    def get_size(self):
+        return SZ_FLOAT
+
+    def write(self, file):
+        file.write(struct.pack('<f', self.value))
+
+    def __str__(self):
+        return str(self.value)
+
+
+class _3ds_string(object):
+    """Class representing a zero-terminated string for a 3ds file."""
+    __slots__ = ("value", )
+
+    def __init__(self, val):
+        assert type(val) == bytes
+        self.value = val
+
+    def get_size(self):
+        return (len(self.value) + 1)
+
+    def write(self, file):
+        binary_format = '<%ds' % (len(self.value) + 1)
+        file.write(struct.pack(binary_format, self.value))
+
+    def __str__(self):
+        return str((self.value).decode("ASCII"))
+
+
+class _3ds_point_3d(object):
+    """Class representing a three-dimensional point for a 3ds file."""
+    __slots__ = "x", "y", "z"
+
+    def __init__(self, point):
+        self.x, self.y, self.z = point
+
+    def get_size(self):
+        return 3 * SZ_FLOAT
+
+    def write(self, file):
+        file.write(struct.pack('<3f', self.x, self.y, self.z))
+
+    def __str__(self):
+        return '(%f, %f, %f)' % (self.x, self.y, self.z)
+
+
+# Used for writing a track
+class _3ds_point_4d(object):
+    """Class representing a four-dimensional point for a 3ds file, for instance a quaternion."""
+    __slots__ = "w", "x", "y", "z"
+
+    def __init__(self, point):
+        self.w, self.x, self.y, self.z = point
+
+    def get_size(self):
+        return 4 * SZ_FLOAT
+
+    def write(self,file):
+        data=struct.pack('<4f', self.w, self.x, self.y, self.z)
+        file.write(data)
+
+    def __str__(self):
+        return '(%f, %f, %f, %f)' % (self.w, self.x, self.y, self.z)
+
+
+class _3ds_point_uv(object):
+    """Class representing a UV-coordinate for a 3ds file."""
+    __slots__ = ("uv", )
+
+    def __init__(self, point):
+        self.uv = point
+
+    def get_size(self):
+        return 2 * SZ_FLOAT
+
+    def write(self, file):
+        data = struct.pack('<2f', self.uv[0], self.uv[1])
+        file.write(data)
+
+    def __str__(self):
+        return '(%g, %g)' % self.uv
+
+
+class _3ds_float_color(object):
+    """Class representing a rgb float color for a 3ds file."""
+    __slots__ = "r", "g", "b"
+
+    def __init__(self, col):
+        self.r, self.g, self.b = col
+
+    def get_size(self):
+        return 3 * SZ_FLOAT
+
+    def write(self, file):
+        file.write(struct.pack('<3f', self.r, self.g, self.b))
+
+    def __str__(self):
+        return '{%f, %f, %f}' % (self.r, self.g, self.b)
+
+
+class _3ds_rgb_color(object):
+    """Class representing a (24-bit) rgb color for a 3ds file."""
+    __slots__ = "r", "g", "b"
+
+    def __init__(self, col):
+        self.r, self.g, self.b = col
+
+    def get_size(self):
+        return 3
+
+    def write(self, file):
+        file.write(struct.pack('<3B', int(255 * self.r), int(255 * self.g), int(255 * self.b)))
+
+    def __str__(self):
+        return '{%f, %f, %f}' % (self.r, self.g, self.b)
+
+
+class _3ds_face(object):
+    """Class representing a face for a 3ds file."""
+    __slots__ = ("vindex", "flag", )
+
+    def __init__(self, vindex, flag):
+        self.vindex = vindex
+        self.flag = flag
+
+    def get_size(self):
+        return 4 * SZ_SHORT
+
+    # No need to validate every face vert, the oversized array will catch this problem
+    def write(self, file):
+        # The last short is used for face flags
+        file.write(struct.pack('<4H', self.vindex[0], self.vindex[1], self.vindex[2], self.flag))
+
+    def __str__(self):
+        return '[%d %d %d %d]' % (self.vindex[0], self.vindex[1], self.vindex[2], self.flag)
+
+
+class _3ds_array(object):
+    """Class representing an array of variables for a 3ds file.
+    Consists of a _3ds_ushort to indicate the number of items, followed by the items themselves."""
+    __slots__ = "values", "size"
 
     def __init__(self):
-        self.ID = 0
-        self.length = 0
-        self.bytes_read = 0
+        self.values = []
+        self.size = SZ_SHORT
 
-    def dump(self):
-        print('ID: ', self.ID)
-        print('ID in hex: ', hex(self.ID))
-        print('length: ', self.length)
-        print('bytes_read: ', self.bytes_read)
+    # Add an item
+    def add(self, item):
+        self.values.append(item)
+        self.size += item.get_size()
 
+    def get_size(self):
+        return self.size
 
-def read_chunk(file, chunk):
-    temp_data = file.read(struct.calcsize(chunk.binary_format))
-    data = struct.unpack(chunk.binary_format, temp_data)
-    chunk.ID = data[0]
-    chunk.length = data[1]
-    # update the bytes read function
-    chunk.bytes_read = 6
+    def validate(self):
+        return len(self.values) <= 65535
 
-    # if debugging
-    # chunk.dump()
+    def write(self, file):
+        _3ds_ushort(len(self.values)).write(file)
+        for value in self.values:
+            value.write(file)
 
-
-def read_string(file):
-    # read in the characters till we get a null character
-    s = []
-    while True:
-        c = file.read(1)
-        if c == b'\x00':
-            break
-        s.append(c)
-        # print('string: ', s)
-
-    # Remove the null character from the string
-    # print("read string", s)
-    return str(b''.join(s), "utf-8", "replace"), len(s) + 1
+    # To not overwhelm the output in a dump, a _3ds_array only
+    # outputs the number of items, not all of the actual items
+    def __str__(self):
+        return '(%d items)' % len(self.values)
 
 
-def skip_to_end(file, skip_chunk):
-    buffer_size = skip_chunk.length - skip_chunk.bytes_read
-    binary_format = '%ic' % buffer_size
-    file.read(struct.calcsize(binary_format))
-    skip_chunk.bytes_read += buffer_size
+class _3ds_named_variable(object):
+    """Convenience class for named variables."""
+    __slots__ = "value", "name"
+
+    def __init__(self, name, val=None):
+        self.name = name
+        self.value = val
+
+    def get_size(self):
+        if self.value is None:
+            return 0
+        else:
+            return self.value.get_size()
+
+    def write(self, file):
+        if self.value is not None:
+            self.value.write(file)
+
+    def dump(self, indent):
+        if self.value is not None:
+            print(indent * " ",
+                  self.name if self.name else "[unnamed]",
+                  " = ",
+                  self.value)
+
+
+# The chunk class
+class _3ds_chunk(object):
+    """Class representing a chunk in a 3ds file.
+    Chunks contain zero or more variables, followed by zero or more subchunks."""
+    __slots__ = "ID", "size", "variables", "subchunks"
+
+    def __init__(self, chunk_id=0):
+        self.ID = _3ds_ushort(chunk_id)
+        self.size = _3ds_uint(0)
+        self.variables = []
+        self.subchunks = []
+
+    def add_variable(self, name, var):
+        """Add a named variable.
+        The name is mostly for debugging purposes."""
+        self.variables.append(_3ds_named_variable(name, var))
+
+    def add_subchunk(self, chunk):
+        """Add a subchunk."""
+        self.subchunks.append(chunk)
+
+    def get_size(self):
+        """Calculate the size of the chunk and return it.
+        The sizes of the variables and subchunks are used to determine this chunk's size."""
+        tmpsize = self.ID.get_size() + self.size.get_size()
+        for variable in self.variables:
+            tmpsize += variable.get_size()
+        for subchunk in self.subchunks:
+            tmpsize += subchunk.get_size()
+        self.size.value = tmpsize
+        return self.size.value
+
+    def validate(self):
+        for var in self.variables:
+            func = getattr(var.value, "validate", None)
+            if (func is not None) and not func():
+                return False
+
+        for chunk in self.subchunks:
+            func = getattr(chunk, "validate", None)
+            if (func is not None) and not func():
+                return False
+
+        return True
+
+    def write(self, file):
+        """Write the chunk to a file.
+        Uses the write function of the variables and the subchunks to do the actual work."""
+
+        # Write header
+        self.ID.write(file)
+        self.size.write(file)
+        for variable in self.variables:
+            variable.write(file)
+        for subchunk in self.subchunks:
+            subchunk.write(file)
+
+    def dump(self, indent=0):
+        """Write the chunk to a file.
+        Dump is used for debugging purposes, to dump the contents of a chunk to the standard output.
+        Uses the dump function of the named variables and the subchunks to do the actual work."""
+        print(indent * " ",
+              'ID=%r' % hex(self.ID.value),
+              'size=%r' % self.get_size())
+        for variable in self.variables:
+            variable.dump(indent + 1)
+        for subchunk in self.subchunks:
+            subchunk.dump(indent + 1)
 
 
 #############
 # MATERIALS #
 #############
 
-def add_texture_to_material(image, contextWrapper, pct, extend, alpha,
-                            scale, offset, angle, luma, tint1, tint2, mapto):
-    shader = contextWrapper.node_principled_bsdf
-    nodetree = contextWrapper.material.node_tree
-    shader.location = (-300, 0)
-    nodes = nodetree.nodes
-    links = nodetree.links
+def get_material_image(material):
+    """ Get images from paint slots."""
+    if material:
+        pt = material.paint_active_slot
+        tex = material.texture_paint_images
+        if pt < len(tex):
+            slot = tex[pt]
+            if slot.type == 'IMAGE':
+                return slot
 
-    if mapto == 'COLOR':
-        mixer = nodes.new(type='ShaderNodeMixRGB')
-        mixer.label = "Mixer"
-        mixer.inputs[0].default_value = pct / 100
-        mixer.inputs[1].default_value = (
-            tint1[:3] + [1] if tint1 else shader.inputs['Base Color'].default_value[:])
-        contextWrapper._grid_to_location(1, 2, dst_node=mixer, ref_node=shader)
-        img_wrap = contextWrapper.base_color_texture
-        img_wrap.node_mapping.name = 'Diffuse Mapping'
-        img_wrap.node_image.name = 'Diffuse Texture'
-        links.new(mixer.outputs[0], shader.inputs['Base Color'])
-        links.new(img_wrap.node_image.outputs[0], mixer.inputs[2])
-        if luma == 'alpha':
-            image.alpha_mode = 'CHANNEL_PACKED'
-            links.new(img_wrap.node_image.outputs[1], shader.inputs['Alpha'])
-        if tint2 is not None:
-            mixer.inputs[2].default_value = tint2[:3] + [1]    
-    elif mapto == 'ROUGHNESS':
-        img_wrap = contextWrapper.roughness_texture
-    elif mapto == 'METALLIC':
-        shader.location = (300, 300)
-        img_wrap = contextWrapper.metallic_texture
-    elif mapto == 'SPECULARITY':
-        shader.location = (300, -600)
-        img_wrap = contextWrapper.specular_tint_texture
-    elif mapto == 'ALPHA':
-        shader.location = (300, 300)
-        img_wrap = contextWrapper.alpha_texture
-        img_wrap.use_alpha = False
-        links.new(img_wrap.node_image.outputs[0], img_wrap.socket_dst)
-    elif mapto == 'EMISSION':
-        shader.location = (-450, -600)
-        img_wrap = contextWrapper.emission_color_texture
-    elif mapto == 'NORMAL':
-        shader.location = (300, 300)
-        img_wrap = contextWrapper.normalmap_texture
-        img_wrap.node_mapping.name = 'Normal Mapping'
-        image.alpha_mode = 'CHANNEL_PACKED'
-    elif mapto == 'TRANSMISSION':
-        shader.location = (-600, 900)
-        img_wrap = contextWrapper.transmission_texture
-    elif mapto == 'SPECULAR':
-        shader.location = (-150, -300)
-        img_wrap = contextWrapper.specular_texture
-    elif mapto == 'LUMINOUS':
-        shader.location = (-300, -300)
-        img_wrap = contextWrapper.emission_strength_texture
-    elif mapto in {'TEXTURE', 'TEXMASK'}:
-        align = 0 if mapto == 'TEXTURE' else -1
-        img_wrap = nodes.new(type='ShaderNodeTexImage')
-        img_wrap.label = image.name
-        contextWrapper._grid_to_location(align, 2, dst_node=img_wrap, ref_node=shader)
-        for node in nodes:
-            if node.label == 'Mixer':
-                links.new(node.outputs[0], shader.inputs['Base Color'])
-                spare = node.inputs[1] if node.inputs[1].is_linked is False else node.inputs[2]
-                socket = spare if mapto == 'TEXTURE' else node.inputs[0]
-                links.new(img_wrap.outputs[0], socket)
-            if node.name == 'Diffuse Mapping':
-                links.new(node.outputs[0], img_wrap.inputs[0])
-        if shader.inputs['Base Color'].is_linked is False:
-            links.new(img_wrap.outputs[0], shader.inputs['Base Color'])
-    elif mapto == 'BUMPMASK':
-        normal_map = nodes.get('Normal Map')
-        img_wrap = nodes.new(type='ShaderNodeTexImage')
-        if normal_map:
-            tex_mapping = nodes.get('Normal Mapping')
-            links.new(img_wrap.outputs[0], normal_map.inputs['Strength'])
-            links.new(tex_mapping.outputs[0], img_wrap.inputs[0])
-            tex_mapping.location = (-900, -900)
-            img_wrap.location = (-600, -900)
-    elif mapto == 'SHINMASK':
-        img_wrap = nodes.new(type='ShaderNodeTexImage')
-        links.new(img_wrap.outputs[0], shader.inputs['Sheen Weight'])
-        img_wrap.location = (-1200, 0)
-    elif mapto == 'REFLECTION':
-        img_wrap = nodes.new(type='ShaderNodeTexImage')
-        links.new(img_wrap.outputs[0], shader.inputs['Coat Weight'])
-        img_wrap.location = (-1200, 300)
 
-    img_wrap.image = image
-    img_wrap.extension = 'REPEAT'
-
-    if extend == 'mirror':
-        img_wrap.extension = 'MIRROR'
-    elif extend == 'decal':
-        img_wrap.extension = 'EXTEND'
-    elif extend == 'noWrap':
-        img_wrap.extension = 'CLIP'
-
-    if mapto not in {'TEXTURE', 'TEXMASK', 'BUMPMASK', 'SHINMASK', 'REFLECTION'}:
-        img_wrap.scale = scale
-        img_wrap.translation = offset
-        img_wrap.rotation[2] = angle
-        if mapto in {'ROUGHNESS', 'METALLIC', 'SPECULARITY'}:
-            if tint1:
-                img_wrap.node_dst.inputs['Coat Tint'].default_value = tint1[:3] + [1]
-            if tint2:
-                img_wrap.node_dst.inputs['Sheen Tint'].default_value = tint2[:3] + [1]
-        if alpha == 'alpha':
-            own_node = img_wrap.node_image
-            primary_tex = nodes.get('Diffuse Texture')
-            contextWrapper.material.blend_method = 'HASHED'
-            links.new(own_node.outputs[1], img_wrap.socket_dst)
-            if primary_tex:
-                tex = primary_tex.image.name
-                own_map = img_wrap.node_mapping
-                if tex == image.name:
-                    links.new(primary_tex.outputs[1], img_wrap.socket_dst)
-                    try:
-                        nodes.remove(own_map)
-                        nodes.remove(own_node)
-                    except:
-                        pass
-                    for imgs in bpy.data.images:
-                        if imgs.name[-3:].isdigit():
-                            if not imgs.users:
-                                bpy.data.images.remove(imgs)
+def get_uv_image(ma):
+    """ Get image from material wrapper."""
+    if ma and ma.use_nodes:
+        mat_wrap = node_shader_utils.PrincipledBSDFWrapper(ma)
+        mat_tex = mat_wrap.base_color_texture
+        if mat_tex and mat_tex.image is not None:
+            return mat_tex.image
     else:
-        if img_wrap.inputs[0].is_linked is False:
-            tex_mapping = nodes.get('Texture Coordinate')
-            if tex_mapping:
-                links.new(tex_mapping.outputs['UV'], img_wrap.inputs[0])
+        return get_material_image(ma)
 
-    shader.location = (300, 300)
-    contextWrapper._grid_to_location(1, 0, dst_node=contextWrapper.node_out, ref_node=shader)
+
+def make_material_subchunk(chunk_id, color):
+    """Make a material subchunk.
+    Used for color subchunks, such as diffuse color or ambient color subchunks."""
+    mat_sub = _3ds_chunk(chunk_id)
+    col1 = _3ds_chunk(RGB1)
+    col1.add_variable("color1", _3ds_rgb_color(clamp_values(color, 0.0, 1.0)))
+    mat_sub.add_subchunk(col1)
+    # Optional
+    # col2 = _3ds_chunk(RGBI)
+    # col2.add_variable("color2", _3ds_rgb_color(clamp_values(color, 0.0, 1.0)))
+    # mat_sub.add_subchunk(col2)
+    return mat_sub
+
+
+def make_percent_subchunk(chunk_id, percent):
+    """Make a percentage based subchunk."""
+    pct_sub = _3ds_chunk(chunk_id)
+    pcti = _3ds_chunk(PCT)
+    pcti.add_variable("percent", _3ds_ushort(int(round(percent * 100, 0))))
+    pct_sub.add_subchunk(pcti)
+    # Optional
+    # pctf = _3ds_chunk(PCTF)
+    # pctf.add_variable("pctfloat", _3ds_float(round(percent, 6)))
+    # pct_sub.add_subchunk(pctf)
+    return pct_sub
+
+
+
+def make_mapping_chunks(tex_chunk, scale, translation, rotation):
+    """Make Material Map mapping chunks."""
+
+    tex_map_uscale = _3ds_chunk(MAT_MAP_USCALE)
+    tex_map_uscale.add_variable("mapuscale", _3ds_float(round(scale[0], 6)))
+    tex_chunk.add_subchunk(tex_map_uscale)
+
+    tex_map_vscale = _3ds_chunk(MAT_MAP_VSCALE)
+    tex_map_vscale.add_variable("mapvscale", _3ds_float(round(scale[1], 6)))
+    tex_chunk.add_subchunk(tex_map_vscale)
+
+    tex_map_uoffset = _3ds_chunk(MAT_MAP_UOFFSET)
+    tex_map_uoffset.add_variable("mapuoffset", _3ds_float(round(translation[0], 6)))
+    tex_chunk.add_subchunk(tex_map_uoffset)
+
+    tex_map_voffset = _3ds_chunk(MAT_MAP_VOFFSET)
+    tex_map_voffset.add_variable("mapvoffset", _3ds_float(round(translation[1], 6)))
+    tex_chunk.add_subchunk(tex_map_voffset)
+
+    tex_map_angle = _3ds_chunk(MAT_MAP_ANG)
+    tex_map_angle.add_variable("mapangle", _3ds_float(round(rotation[2], 6)))
+    tex_chunk.add_subchunk(tex_map_angle)
+
+
+def make_texture_chunk(chunk_id, teximages, texmixer, pct, mapnode=None):
+    """Make Material Map texture chunk."""
+    # Add texture percentage value (100 = 1.0)
+    mat_sub = make_percent_subchunk(chunk_id, pct)
+    has_entry = False
+
+    def add_image(img, extension):
+        filename = bpy.path.basename(img.filepath)
+        mat_sub_file = _3ds_chunk(MAT_MAP_FILE)
+        mat_sub_tiling = _3ds_chunk(MAT_MAP_TILING)
+        mat_sub_file.add_variable("image", _3ds_string(sane_name(filename)))
+        mat_sub.add_subchunk(mat_sub_file)
+
+        tiling = 0
+        if extension == 'EXTEND':  # decal flag
+            tiling |= 0x1
+        if extension == 'MIRROR':  # mirror flag
+            tiling |= 0x2
+        if extension == 'CLIP':  # no wrap
+            tiling |= 0x10
+
+        mat_sub_tiling.add_variable("tiling", _3ds_ushort(tiling))
+        mat_sub.add_subchunk(mat_sub_tiling)
+
+        if mapnode:
+            make_mapping_chunks(mat_sub, mapnode.inputs[3].default_value, mapnode.inputs[1].default_value, mapnode.inputs[2].default_value)
+
+        if texmixer:  # Add tint color
+            tint = (0.0, 0.0, 0.0)
+            tint1 = _3ds_chunk(MAP_COL1)
+            tint2 = _3ds_chunk(MAP_COL2)
+            input1 = next((ip.default_value for ip in texmixer.inputs if ip.identifier in {'Color1', 'A_Color'}), tint)
+            input2 = next((ip.default_value for ip in texmixer.inputs if ip.identifier in {'Color2', 'B_Color'}), tint)
+            tint1.add_variable("tint1", _3ds_rgb_color(clamp_values(input1[:3], 0.0, 1.0)))
+            tint2.add_variable("tint2", _3ds_rgb_color(clamp_values(input2[:3], 0.0, 1.0)))
+            mat_sub.add_subchunk(tint1)
+            mat_sub.add_subchunk(tint2)
+
+    for tex in teximages:
+        extend = tex.extension
+        add_image(tex.image, extend)
+        has_entry = True
+
+    return mat_sub if has_entry else None
+
+
+def make_material_texture_chunk(chunk_id, texslots, pct):
+    """Make Material Map texture chunk given a seq. of MaterialTextureSlot's
+    Paint slots are optionally used as image source if no nodes are used."""
+
+    # Add texture percentage value
+    mat_sub = make_percent_subchunk(chunk_id, pct)
+    has_entry = False
+
+    def add_texslot(texslot):
+        image = texslot.image
+        socket = None
+
+        filename = bpy.path.basename(image.filepath)
+        mat_sub_file = _3ds_chunk(MAT_MAP_FILE)
+        mat_sub_file.add_variable("mapfile", _3ds_string(sane_name(filename)))
+        mat_sub.add_subchunk(mat_sub_file)
+        for link in texslot.socket_dst.links:
+            socket = link.from_socket.identifier
+
+        mat_sub_mapflags = _3ds_chunk(MAT_MAP_TILING)
+        """Control bit flags, where 0x1 activates decaling, 0x2 activates mirror,
+        0x8 activates inversion, 0x10 deactivates tiling, 0x20 activates summed area sampling,
+        0x40 activates alpha source, 0x80 activates tinting, 0x100 ignores alpha, 0x200 activates RGB tint.
+        Bits 0x80, 0x100, and 0x200 are only used with TEXMAP, TEX2MAP, and SPECMAP chunks.
+        0x40, when used with a TEXMAP, TEX2MAP, or SPECMAP chunk must be accompanied with a tint bit,
+        either 0x100 or 0x200, tintcolor will be processed if a tintflag was created."""
+
+        mapflags = 0
+        if texslot.extension == 'EXTEND':
+            mapflags |= 0x1
+        if texslot.extension == 'MIRROR':
+            mapflags |= 0x2
+        if texslot.extension == 'CLIP':
+            mapflags |= 0x10
+
+        if socket == 'Alpha':
+            mapflags |= 0x40
+            if texslot.socket_dst.identifier in {'Base Color', 'Specular Tint'}:
+                mapflags |= 0x80 if image.colorspace_settings.name == 'Non-Color' else 0x200
+
+        mat_sub_mapflags.add_variable("mapflags", _3ds_ushort(mapflags))
+        mat_sub.add_subchunk(mat_sub_mapflags)
+
+        texblur = 0.0
+        mat_sub_texblur = _3ds_chunk(MAT_MAP_TEXBLUR)
+        if texslot.socket_dst.identifier in {'Base Color', 'Specular Tint'}:
+            texblur = clamp_values(texslot.node_dst.inputs['Sheen Weight'].default_value, 0.0, 1.0)
+        mat_sub_texblur.add_variable("maptexblur", _3ds_float(round(texblur, 6)))
+        mat_sub.add_subchunk(mat_sub_texblur)
+
+        make_mapping_chunks(mat_sub, texslot.scale, texslot.translation, texslot.rotation)
+
+        if texslot.socket_dst.identifier in {'Metallic', 'Roughness', 'Specular Tint'}:  # Add tint color
+            tint1 = _3ds_chunk(MAP_COL1)
+            tint2 = _3ds_chunk(MAP_COL2)
+            color1 = clamp_values(texslot.node_dst.inputs['Coat Tint'].default_value[:3], 0.0, 1.0)
+            color2 = clamp_values(texslot.node_dst.inputs['Sheen Tint'].default_value[:3], 0.0, 1.0)
+            tint1.add_variable("tint1", _3ds_rgb_color(color1))
+            tint2.add_variable("tint2", _3ds_rgb_color(color2))
+            mat_sub.add_subchunk(tint1)
+            mat_sub.add_subchunk(tint2)
+
+    # Store all textures for this mapto in order. This at least is what the
+    # 3DS exporter did so far, afaik most readers will just skip over 2nd textures
+    for slot in texslots:
+        if slot.image is not None:
+            add_texslot(slot)
+            has_entry = True
+
+    return mat_sub if has_entry else None
+
+
+def make_material_chunk(material, image):
+    """Make a material chunk out of a blender material.
+    Shading method is required for 3ds max, 0 for wireframe.
+    0x1 for flat, 0x2 for gouraud, 0x3 for phong and 0x4 for metal."""
+
+    material_chunk = _3ds_chunk(MATERIAL)
+    name = _3ds_chunk(MATNAME)
+    shading = _3ds_chunk(MATSHADING)
+    name_str = material.name if material else "None"
+    name.add_variable("name", _3ds_string(sane_name(name_str)))
+    material_chunk.add_subchunk(name)
+
+    if not material:
+        shading.add_variable("shading", _3ds_ushort(1))  # Flat shading
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, (0.0, 0.0, 0.0)))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, (0.8, 0.8, 0.8)))
+        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, (1.0, 1.0, 1.0)))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, 0.8))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, 0.5))
+        material_chunk.add_subchunk(shading)
+
+    elif material and material.use_nodes:
+        wrap = node_shader_utils.PrincipledBSDFWrapper(material)
+        shading.add_variable("shading", _3ds_ushort(3))  # Phong shading
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, wrap.emission_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, wrap.base_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, wrap.specular_tint[:3]))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, 1 - wrap.roughness))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, wrap.specular))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN3, wrap.metallic))
+        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1 - wrap.alpha))
+        if wrap.node_principled_bsdf is not None:
+            material_chunk.add_subchunk(make_percent_subchunk(MATXPFALL, wrap.transmission))
+            material_chunk.add_subchunk(make_percent_subchunk(MATSELFILPCT, wrap.emission_strength))
+            material_chunk.add_subchunk(make_percent_subchunk(MATREFBLUR, wrap.node_principled_bsdf.inputs['Coat Weight'].default_value))
+        material_chunk.add_subchunk(shading)
+
+        mxpct = 0.5
+        primary_map = None
+        primary_tex = False
+        tximg = 'TEX_IMAGE'
+        mtype = 'MIX', 'MIX_RGB'
+        mtlks = material.node_tree.links
+        mxtex = [lk.from_node for lk in mtlks if lk.from_node.type == tximg and lk.to_socket.identifier in {'Color2', 'B_Color'}]
+        mixer = next((lk.from_node for lk in mtlks if lk.from_node.type in mtype and lk.to_node.type == 'BSDF_PRINCIPLED'), False)
+        if mixer:
+            mxpct = next((ip.default_value for ip in mixer.inputs if ip.identifier in {'Fac', 'Factor_Float'}), 0.5)
+
+        if wrap.base_color_texture:
+            color = [wrap.base_color_texture]
+            c_pct = 0.7 + sum(wrap.base_color[:]) * 0.1
+            primary_map = wrap.base_color_texture.node_mapping
+            matmap = make_material_texture_chunk(MAT_DIFFUSEMAP, color, c_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+                primary_tex = True
+
+        if mxtex and not primary_tex:
+            primary_map = next((lk.from_node for lk in mtlks if lk.from_node.type == 'MAPPING' and lk.to_node.name == mxtex[0].name), None)
+            material_chunk.add_subchunk(make_texture_chunk(MAT_DIFFUSEMAP, mxtex, mixer, mxpct, primary_map))
+            primary_tex = True
+
+        if wrap.specular_tint_texture:
+            spec = [wrap.specular_tint_texture]
+            s_pct = material.specular_intensity
+            matmap = make_material_texture_chunk(MAT_SPECMAP, spec, s_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.alpha_texture:
+            alpha = [wrap.alpha_texture]
+            a_pct = material.diffuse_color[3]
+            matmap = make_material_texture_chunk(MAT_OPACMAP, alpha, a_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.metallic_texture:
+            metallic = [wrap.metallic_texture]
+            m_pct = material.metallic
+            matmap = make_material_texture_chunk(MAT_REFLMAP, metallic, m_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.normalmap_texture:
+            normal = [wrap.normalmap_texture]
+            b_pct = wrap.normalmap_strength
+            primary_map = wrap.normalmap_texture.node_mapping
+            matmap = make_material_texture_chunk(MAT_BUMPMAP, normal, b_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+                material_chunk.add_subchunk(make_percent_subchunk(MAT_BUMP_PERCENT, b_pct))
+
+        if wrap.roughness_texture:
+            roughness = [wrap.roughness_texture]
+            r_pct = 1 - material.roughness
+            matmap = make_material_texture_chunk(MAT_SHINMAP, roughness, r_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.emission_color_texture:
+            emission = [wrap.emission_color_texture]
+            e_pct = wrap.emission_strength
+            matmap = make_material_texture_chunk(MAT_SELFIMAP, emission, e_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.transmission_texture:
+            transmission = [wrap.transmission_texture]
+            t_pct = wrap.transmission
+            matmap = make_material_texture_chunk(MAT_OPACMASK, transmission, t_pct)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.specular_texture:
+            specular = [wrap.specular_texture]
+            matmap = make_material_texture_chunk(MAT_SPECMASK, specular, 1)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        if wrap.emission_strength_texture:
+            luminous = [wrap.emission_strength_texture]
+            matmap = make_material_texture_chunk(MAT_SELFIMASK, luminous, 1)
+            if matmap:
+                material_chunk.add_subchunk(matmap)
+
+        matmap = diffmask = normalmask = shinmask = reflmask = None
+        # Make sure no textures are lost. Everything that doesn't fit
+        # into a channel is exported as secondary texture
+        for link in mtlks:
+            bumpmask = link.from_node if link.from_node.type == tximg and link.to_node.type == 'NORMAL_MAP' and link.to_socket.identifier == 'Strength' else None
+            texmask = link.from_node if link.from_node.type == tximg and link.to_socket.identifier in {'Fac', 'Factor_Float'} else None
+            secondary = link.from_node if link.from_node.type == tximg and link.to_socket.identifier in {'Color1', 'A_Color'} else None
+            sheenmask = link.from_node if link.from_node.type == tximg and link.to_socket.identifier == 'Sheen Weight' else None
+            coatmask = link.from_node if link.from_node.type == tximg and link.to_socket.identifier == 'Coat Weight' else None
+            if secondary:
+                matmap = make_texture_chunk(MAT_TEX2MAP, [secondary], mixer, 1 - mxpct, primary_map)
+            if texmask:
+                diffmask = make_texture_chunk(MAT_TEXMASK, [texmask], False, mxpct, primary_map)
+            if bumpmask:
+                normalmask = make_texture_chunk(MAT_BUMPMASK, [bumpmask], False, 1, primary_map)
+            if sheenmask:
+                shinmask = make_texture_chunk(MAT_SHINMASK, [sheenmask], False, 1)
+            if coatmask:
+                reflmask = make_texture_chunk(MAT_REFLMASK, [coatmask], False, 1)
+        if primary_tex and matmap:
+            material_chunk.add_subchunk(matmap)
+        if diffmask:
+            material_chunk.add_subchunk(diffmask)
+        if normalmask:
+            material_chunk.add_subchunk(normalmask)
+        if shinmask:
+            material_chunk.add_subchunk(shinmask)
+        if reflmask:
+            material_chunk.add_subchunk(reflmask)
+
+    else:
+        shading.add_variable("shading", _3ds_ushort(2))  # Gouraud shading
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, material.line_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, material.diffuse_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, material.specular_color[:]))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, 1 - material.roughness))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, material.specular_intensity))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN3, material.metallic))
+        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1 - material.diffuse_color[3]))
+        material_chunk.add_subchunk(shading)
+
+        slots = [get_material_image(material)]  # Can be None
+
+        if image:
+            material_chunk.add_subchunk(make_texture_chunk(MAT_DIFFUSEMAP, slots))
+
+    return material_chunk
 
 
 #############
 # MESH DATA #
 #############
 
-childs_list = []
-parent_list = []
-
-def process_next_chunk(context, file, previous_chunk, imported_objects, CONSTRAIN, FILTER,
-                       IMAGE_SEARCH, KEYFRAME, APPLY_MATRIX, CONVERSE, MEASURE, CURSOR):
-
-    contextObName = None
-    contextWorld = None
-    contextLamp = None
-    contextCamera = None
-    contextMaterial = None
-    contextAlpha = None
-    contextColor = None
-    contextWrapper = None
-    contextReflection = None
-    contextTransmission = None
-    contextMesh_vertls = None
-    contextMesh_facels = None
-    contextMesh_flag = None
-    contextMeshMaterials = []
-    contextMesh_smooth = None
-    contextMeshUV = None
-    contextRender_flag = True
-    contextShadow_flag = True
-    contextTrack_flag = False
-
-    # TEXTURE_DICT = {}
-    MATDICT = {}
-
-    # Localspace variable names, faster.
-    SZ_FLOAT = struct.calcsize('f')
-    SZ_2FLOAT = struct.calcsize('2f')
-    SZ_3FLOAT = struct.calcsize('3f')
-    SZ_4FLOAT = struct.calcsize('4f')
-    SZ_U_INT = struct.calcsize('I')
-    SZ_U_SHORT = struct.calcsize('H')
-    SZ_4U_SHORT = struct.calcsize('4H')
-    SZ_4x3MAT = struct.calcsize('ffffffffffff')
-
-    object_dict = {}  # object identities
-    object_list = []  # for hierarchy
-    object_parent = []  # index of parent in hierarchy, 0xFFFF = no parent
-    pivot_list = []  # pivots with hierarchy handling
-    trackposition = {}  # keep track to position for target calculation
-
-    def putContextMesh(context, ContextMesh_vertls, ContextMesh_facels, ContextMesh_flag,
-                       ContextMeshMaterials, ContextMesh_smooth, ContextRender_flag, ContextShadow_flag):
-
-        bmesh = bpy.data.meshes.new(contextObName)
-        if ContextMesh_facels is None:
-            ContextMesh_facels = []
-
-        if ContextMesh_vertls:
-            bmesh.vertices.add(len(ContextMesh_vertls) // 3)
-            bmesh.vertices.foreach_set("co", ContextMesh_vertls)
-
-            nbr_faces = len(ContextMesh_facels)
-            bmesh.polygons.add(nbr_faces)
-            bmesh.loops.add(nbr_faces * 3)
-            eekadoodle_faces = []
-            for v1, v2, v3 in ContextMesh_facels:
-                eekadoodle_faces.extend((v3, v1, v2) if v3 == 0 else (v1, v2, v3))
-            bmesh.polygons.foreach_set("loop_start", range(0, nbr_faces * 3, 3))
-            bmesh.loops.foreach_set("vertex_index", eekadoodle_faces)
-
-            if bmesh.polygons and contextMeshUV:
-                bmesh.uv_layers.new()
-                uv_faces = bmesh.uv_layers.active.data[:]
-            else:
-                uv_faces = None
-
-            for mat_idx, (matName, faces) in enumerate(ContextMeshMaterials):
-                if matName is None:
-                    bmat = None
-                else:
-                    bmat = MATDICT.get(matName)
-                    # in rare cases no materials defined.
-
-                bmesh.materials.append(bmat)  # can be None
-                if bmesh.polygons:
-                    for fidx in faces:
-                        bmesh.polygons[fidx].material_index = mat_idx
-                else:
-                    print("\tError: Mesh has no faces!")
-
-            if uv_faces:
-                uvl = bmesh.uv_layers.active.data[:]
-                for fidx, pl in enumerate(bmesh.polygons):
-                    face = ContextMesh_facels[fidx]
-                    v1, v2, v3 = face
-
-                    # eekadoodle
-                    if v3 == 0:
-                        v1, v2, v3 = v3, v1, v2
-
-                    uvl[pl.loop_start].uv = contextMeshUV[v1 * 2: (v1 * 2) + 2]
-                    uvl[pl.loop_start + 1].uv = contextMeshUV[v2 * 2: (v2 * 2) + 2]
-                    uvl[pl.loop_start + 2].uv = contextMeshUV[v3 * 2: (v3 * 2) + 2]
-                    # always a tri
-
-        bmesh.validate()
-        bmesh.update()
-
-        ob = bpy.data.objects.new(contextObName, bmesh)
-        object_dictionary[contextObName] = ob
-        context.view_layer.active_layer_collection.collection.objects.link(ob)
-        imported_objects.append(ob)
-
-        if not ContextRender_flag:
-            ob.hide_render = True
-        if not ContextShadow_flag:
-            ob.visible_shadow = False
-
-        if ContextMesh_flag:
-            """Bit 0 (0x1) sets edge CA visible, Bit 1 (0x2) sets edge BC visible and
-               Bit 2 (0x4) sets edge AB visible. In Blender we use sharp edges for those flags."""
-            edgesmoothmap = {}
-
-            for f, pl in enumerate(bmesh.polygons):
-                face = ContextMesh_facels[f]
-                faceflag = ContextMesh_flag[f]
-                edges = [bmesh.edges[bmesh.loops[pl.loop_start + i].edge_index] for i in range(3)]
-                edge_ab = bmesh.edges[bmesh.loops[pl.loop_start].edge_index]
-                edge_bc = bmesh.edges[bmesh.loops[pl.loop_start+1].edge_index]
-                edge_ca = bmesh.edges[bmesh.loops[pl.loop_start+2].edge_index]
-
-                if face[2] == 0:
-                    edges = [edges[2], edges[0], edges[1]]
-                    edge_ab, edge_bc, edge_ca = edge_ca, edge_ab, edge_bc
-
-                if ContextMesh_smooth:
-                    for edge in edges:
-                        if edge.index in edgesmoothmap:
-                            if (edgesmoothmap[edge.index] & ContextMesh_smooth[f]) == 0:
-                                if faceflag & 0x1:
-                                    edge_ca.use_edge_sharp = True
-                                if faceflag & 0x2:
-                                    edge_bc.use_edge_sharp = True
-                                if faceflag & 0x4:
-                                    edge_ab.use_edge_sharp = True
-                        else:
-                            edgesmoothmap[edge.index] = ContextMesh_smooth[f]
-
-        if ContextMesh_smooth:
-            for f, pl in enumerate(bmesh.polygons):
-                smoothface = ContextMesh_smooth[f]
-                bmesh.polygons[f].use_smooth = True if smoothface > 0 else False
-        else:
-            bmesh.polygons.foreach_set("use_smooth", [False] * len(bmesh.polygons))
-
-    # a spare chunk
-    new_chunk = Chunk()
-    temp_chunk = Chunk()
-
-    CreateBlenderObject = False
-    CreateCameraObject = False
-    CreateLightObject = False
-
-    CreateWorld = 'WORLD' in FILTER
-    CreateMesh = 'MESH' in FILTER
-    CreateLight = 'LIGHT' in FILTER
-    CreateCamera = 'CAMERA' in FILTER
-    CreateEmpty = 'EMPTY' in FILTER
-
-    def read_short(temp_chunk):
-        temp_data = file.read(SZ_U_SHORT)
-        temp_chunk.bytes_read += SZ_U_SHORT
-        return struct.unpack('<H', temp_data)[0]
-
-    def read_long(temp_chunk):
-        temp_data = file.read(SZ_U_INT)
-        temp_chunk.bytes_read += SZ_U_INT
-        return struct.unpack('<I', temp_data)[0]
-
-    def read_float(temp_chunk):
-        temp_data = file.read(SZ_FLOAT)
-        temp_chunk.bytes_read += SZ_FLOAT
-        return struct.unpack('<f', temp_data)[0]
-
-    def read_float_array(temp_chunk):
-        temp_data = file.read(SZ_3FLOAT)
-        temp_chunk.bytes_read += SZ_3FLOAT
-        return [float(val) for val in struct.unpack('<3f', temp_data)]
-
-    def read_byte_color(temp_chunk):
-        temp_data = file.read(struct.calcsize('3B'))
-        temp_chunk.bytes_read += 3
-        return [float(col) / 255 for col in struct.unpack('<3B', temp_data)]
-
-    def read_texture(new_chunk, temp_chunk, mapto):
-        uscale, vscale, uoffset, voffset, angle = 1.0, 1.0, 0.0, 0.0, 0.0
-        contextWrapper.use_nodes = True
-        tint1 = tint2 = None
-        luma = 'normal'
-        extend = 'wrap'
-        alpha = False
-        pct = 100
-
-        contextWrapper.base_color = contextColor[:]
-        contextWrapper.metallic = contextMaterial.metallic
-        contextWrapper.roughness = contextMaterial.roughness
-        contextWrapper.transmission = contextTransmission
-        contextWrapper.specular = contextMaterial.specular_intensity
-        contextWrapper.specular_tint = contextMaterial.specular_color[:]
-        contextWrapper.emission_color = contextMaterial.line_color[:3]
-        contextWrapper.emission_strength = contextMaterial.line_priority / 100
-        contextWrapper.alpha = contextMaterial.diffuse_color[3] = contextAlpha
-        contextWrapper.node_principled_bsdf.inputs['Coat Weight'].default_value = contextReflection
-
-        while (new_chunk.bytes_read < new_chunk.length):
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                pct = read_short(temp_chunk)
-
-            elif temp_chunk.ID == MAT_MAP_FILEPATH:
-                texture_name, read_str_len = read_string(file)
-                img = load_image(texture_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
-                if img and img.depth in {32, 16}:
-                    luma = 'alpha'
-                temp_chunk.bytes_read += read_str_len  # plus one for the null character that gets removed
-
-            elif temp_chunk.ID == MAT_BUMP_PERCENT:
-                contextWrapper.normalmap_strength = (float(read_short(temp_chunk) / 100))
-            elif mapto in {'COLOR', 'SPECULARITY'} and temp_chunk.ID == MAT_MAP_TEXBLUR:
-                contextWrapper.node_principled_bsdf.inputs['Sheen Weight'].default_value = float(read_float(temp_chunk))
-
-            elif temp_chunk.ID == MAT_MAP_TILING:
-                """Control bit flags, 0x1 activates decaling, 0x2 activates mirror, 0x8 activates inversion,
-                0x10 deactivates tiling, 0x20 activates summed area sampling, 0x40 activates alpha source,
-                0x80 activates tinting, 0x100 ignores alpha, 0x200 activates RGB tint. Bits 0x80, 0x100, and 0x200
-                are only used with TEXMAP, TEX2MAP, and SPECMAP chunks. 0x40, when used with a TEXMAP, TEX2MAP, or SPECMAP chunk
-                must be accompanied with a tint bit, either 0x100 or 0x200, tintcolor will be processed if colorchunks are present."""
-                tiling = read_short(temp_chunk)
-                if tiling & 0x1:
-                    extend = 'decal'
-                elif tiling & 0x2:
-                    extend = 'mirror'
-                elif tiling & 0x8:
-                    extend = 'invert'
-                elif tiling & 0x10:
-                    extend = 'noWrap'
-                if tiling & 0x20:
-                    alpha = 'sat'
-                if tiling & 0x40:
-                    alpha = 'alpha'
-                if tiling & 0x80:
-                    luma = 'tint'
-                if tiling & 0x100:
-                    luma = 'noAlpha'
-                if tiling & 0x200:
-                    luma = 'RGBtint'
-
-            elif temp_chunk.ID == MAT_MAP_USCALE:
-                uscale = read_float(temp_chunk)
-            elif temp_chunk.ID == MAT_MAP_VSCALE:
-                vscale = read_float(temp_chunk)
-            elif temp_chunk.ID == MAT_MAP_UOFFSET:
-                uoffset = read_float(temp_chunk)
-            elif temp_chunk.ID == MAT_MAP_VOFFSET:
-                voffset = read_float(temp_chunk)
-            elif temp_chunk.ID == MAT_MAP_ANG:
-                angle = read_float(temp_chunk)
-            elif temp_chunk.ID == MAT_MAP_COL1:
-                tint1 = read_byte_color(temp_chunk)
-            elif temp_chunk.ID == MAT_MAP_COL2:
-                tint2 = read_byte_color(temp_chunk)
-
-            skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # add the map to the material in the right channel
-        if img:
-            add_texture_to_material(img, contextWrapper, pct, extend, alpha, (uscale, vscale, 1),
-                                    (uoffset, voffset, 0), angle, luma, tint1, tint2, mapto)
-
-    def apply_constrain(vec):
-        convector = mathutils.Vector.Fill(3, (CONSTRAIN * 0.1))
-        consize = mathutils.Vector(vec) * convector if CONSTRAIN != 0.0 else mathutils.Vector(vec)
-        return consize
-
-    def get_hierarchy(tree_chunk):
-        child_id = read_short(tree_chunk)
-        childs_list.insert(child_id, contextObName)
-        parent_list.insert(child_id, None)
-        if child_id in parent_list:
-            idp = parent_list.index(child_id)
-            parent_list[idp] = contextObName
-        return child_id
-
-    def get_parent(tree_chunk, child_id=-1):
-        parent_id = read_short(tree_chunk)
-        if parent_id > len(childs_list):
-            parent_list[child_id] = parent_id
-            parent_list.extend([None] * (parent_id - len(parent_list)))
-            parent_list.insert(parent_id, contextObName)
-        elif parent_id < len(childs_list):
-            parent_list[child_id] = childs_list[parent_id]
-
-    def calc_target(loca, target):
-        pan = tilt = 0.0
-        plane = loca + target
-        angle = math.radians(90)  # Target triangulation
-        check_sign = abs(loca.y) < abs(target.y)
-        check_axes = abs(loca.x - target.x) > abs(loca.y - target.y)
-        plane_x = plane.x if check_sign else -1 * plane.x
-        plane_y = plane.y if check_sign else -1 * plane.y
-        sign_xy = plane_x if check_axes else plane.y
-        axis_xy = plane_y if check_axes else plane_x
-        invert = abs(loca.x) < abs(target.x) and not check_sign
-        hyp = math.sqrt(pow(plane.x,2) + pow(plane.y,2))
-        dia = math.sqrt(pow(hyp,2) + pow(plane.z,2))
-        yaw = math.atan2(math.copysign(hyp, sign_xy), axis_xy)
-        bow = math.acos(hyp / dia) if dia != 0 else 0
-        turn = angle - yaw if check_sign else angle + yaw
-        tilt = angle - bow if loca.z > target.z else angle + bow
-        inv = yaw if check_axes else turn
-        pan = inv if invert else -1 * inv
-        return tilt, pan
-
-    def read_track_data(track_chunk):
-        """Trackflags 0x1, 0x2 and 0x3 are for looping. 0x8, 0x10 and 0x20
-        locks the XYZ axes. 0x100, 0x200 and 0x400 unlinks the XYZ axes."""
-        tflags = read_short(track_chunk)
-        contextTrack_flag = tflags
-        temp_data = file.read(SZ_U_INT * 2)
-        track_chunk.bytes_read += SZ_U_INT * 2
-        nkeys = read_long(track_chunk)
-        for i in range(nkeys):
-            nframe = read_long(track_chunk)
-            nflags = read_short(track_chunk)
-            for f in range(bin(nflags)[-5:].count('1')):
-                read_float(track_chunk)  # Check for spline terms
-            trackdata = read_float_array(track_chunk)
-            keyframe_data[nframe] = trackdata
-        return keyframe_data
-
-    def read_track_angle(track_chunk):
-        temp_data = file.read(SZ_U_SHORT * 5)
-        track_chunk.bytes_read += SZ_U_SHORT * 5
-        nkeys = read_long(track_chunk)
-        for i in range(nkeys):
-            nframe = read_long(track_chunk)
-            nflags = read_short(track_chunk)
-            for f in range(bin(nflags)[-5:].count('1')):
-                read_float(track_chunk) # Check for spline terms
-            angle = read_float(track_chunk)
-            keyframe_angle[nframe] = math.radians(angle)
-        return keyframe_angle
-
-    dirname = os.path.dirname(file.name)
-
-    # loop through all the data for this chunk (previous chunk) and see what it is
-    while (previous_chunk.bytes_read < previous_chunk.length):
-        read_chunk(file, new_chunk)
-
-        # Check the Version chunk
-        if new_chunk.ID == VERSION:
-            # read in the version of the file
-            temp_data = file.read(SZ_U_INT)
-            version = struct.unpack('<I', temp_data)[0]
-            new_chunk.bytes_read += 4  # read the 4 bytes for the version number
-            # this loader works with version 3 and below, but may not with 4 and above
-            if version > 3:
-                print("\tNon-Fatal Error:  Version greater than 3, may not load correctly: ", version)
-
-        # The main object info chunk
-        elif new_chunk.ID == OBJECTINFO:
-            process_next_chunk(context, file, new_chunk, imported_objects, CONSTRAIN, FILTER,
-                               IMAGE_SEARCH, KEYFRAME, APPLY_MATRIX, CONVERSE, MEASURE, CURSOR)
-
-            # keep track of how much we read in the main chunk
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If material chunk
-        elif new_chunk.ID == MATERIAL:
-            contextAlpha = True
-            contextReflection = False
-            contextTransmission = False
-            contextColor = mathutils.Color((0.8, 0.8, 0.8))
-            contextMaterial = bpy.data.materials.new('Material')
-            contextWrapper = PrincipledBSDFWrapper(contextMaterial, is_readonly=False, use_nodes=False)
-
-        elif new_chunk.ID == MAT_NAME:
-            material_name, read_str_len = read_string(file)
-            # plus one for the null character that ended the string
-            new_chunk.bytes_read += read_str_len
-            contextMaterial.name = material_name.rstrip()  # remove trailing whitespace
-            MATDICT[material_name] = contextMaterial
-
-        elif new_chunk.ID == MAT_AMBIENT:
-            read_chunk(file, temp_chunk)
-            # to not loose this data, ambient color is stored in line color
-            if temp_chunk.ID == COLOR_F:
-                contextMaterial.line_color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == COLOR_24:
-                contextMaterial.line_color[:3] = read_byte_color(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_DIFFUSE:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                contextColor = mathutils.Color(read_float_array(temp_chunk))
-                contextMaterial.diffuse_color[:3] = contextColor
-            elif temp_chunk.ID == COLOR_24:
-                contextColor = mathutils.Color(read_byte_color(temp_chunk))
-                contextMaterial.diffuse_color[:3] = contextColor
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SPECULAR:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                contextMaterial.specular_color = read_float_array(temp_chunk)
-            elif temp_chunk.ID == COLOR_24:
-                contextMaterial.specular_color = read_byte_color(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SHINESS:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextMaterial.roughness = 1 - (float(read_short(temp_chunk) / 100))
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextMaterial.roughness = 1.0 - float(read_float(temp_chunk))
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SHIN2:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextMaterial.specular_intensity = float(read_short(temp_chunk) / 100)
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextMaterial.specular_intensity = float(read_float(temp_chunk))
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SHIN3:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextMaterial.metallic = float(read_short(temp_chunk) / 100)
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextMaterial.metallic = float(read_float(temp_chunk))
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_TRANSPARENCY:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextAlpha = 1 - (float(read_short(temp_chunk) / 100))
-                contextMaterial.diffuse_color[3] = contextAlpha
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextAlpha = 1.0 - float(read_float(temp_chunk))
-                contextMaterial.diffuse_color[3] = contextAlpha
-            else:
-                skip_to_end(file, temp_chunk)
-            if contextAlpha < 1:
-                contextMaterial.blend_method = 'BLEND'
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_XPFALL:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextTransmission = float(abs(read_short(temp_chunk) / 100))
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_REFBLUR:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextReflection = float(read_short(temp_chunk) / 100)
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextReflection = float(read_float(temp_chunk))
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SELF_ILPCT:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextMaterial.line_priority = int(read_short(temp_chunk))
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextMaterial.line_priority = (float(read_float(temp_chunk)) * 100)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SHADING:
-            shading = read_short(new_chunk)
-            if shading >= 2:
-                contextWrapper.use_nodes = True
-                contextWrapper.base_color = contextColor[:]
-                contextWrapper.metallic = contextMaterial.metallic
-                contextWrapper.roughness = contextMaterial.roughness
-                contextWrapper.transmission = contextTransmission
-                contextWrapper.specular = contextMaterial.specular_intensity
-                contextWrapper.specular_tint = contextMaterial.specular_color[:]
-                contextWrapper.emission_color = contextMaterial.line_color[:3]
-                contextWrapper.emission_strength = contextMaterial.line_priority / 100
-                contextWrapper.alpha = contextMaterial.diffuse_color[3] = contextAlpha
-                contextWrapper.node_principled_bsdf.inputs['Coat Weight'].default_value = contextReflection
-                contextWrapper.use_nodes = False
-                if shading >= 3:
-                    contextWrapper.use_nodes = True
-
-        elif new_chunk.ID == MAT_TEXTURE_MAP:
-            read_texture(new_chunk, temp_chunk, 'COLOR')
-
-        elif new_chunk.ID == MAT_SPECULAR_MAP:
-            read_texture(new_chunk, temp_chunk, 'SPECULARITY')
-
-        elif new_chunk.ID == MAT_OPACITY_MAP:
-            read_texture(new_chunk, temp_chunk, 'ALPHA')
-
-        elif new_chunk.ID == MAT_REFLECTION_MAP:
-            read_texture(new_chunk, temp_chunk, 'METALLIC')
-
-        elif new_chunk.ID == MAT_BUMP_MAP:
-            read_texture(new_chunk, temp_chunk, 'NORMAL')
-
-        elif new_chunk.ID == MAT_BUMP_PERCENT:
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == PCT_SHORT:
-                contextWrapper.normalmap_strength = (float(read_short(temp_chunk) / 100))
-            elif temp_chunk.ID == PCT_FLOAT:
-                contextWrapper.normalmap_strength = float(read_float(temp_chunk))
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        elif new_chunk.ID == MAT_SHIN_MAP:
-            read_texture(new_chunk, temp_chunk, 'ROUGHNESS')
-
-        elif new_chunk.ID == MAT_SELFI_MAP:
-            read_texture(new_chunk, temp_chunk, 'EMISSION')
-
-        elif new_chunk.ID == MAT_TEX2_MAP:
-            read_texture(new_chunk, temp_chunk, 'TEXTURE')
-
-        elif new_chunk.ID == MAT_TEX_MASK:
-            read_texture(new_chunk, temp_chunk, 'TEXMASK')
-
-        elif new_chunk.ID == MAT_OPAC_MASK:
-            read_texture(new_chunk, temp_chunk, 'TRANSMISSION')
-
-        elif new_chunk.ID == MAT_BUMP_MASK:
-            read_texture(new_chunk, temp_chunk, 'BUMPMASK')
-
-        elif new_chunk.ID == MAT_SHIN_MASK:
-            read_texture(new_chunk, temp_chunk, 'SHINMASK')
-
-        elif new_chunk.ID == MAT_SPEC_MASK:
-            read_texture(new_chunk, temp_chunk, 'SPECULAR')
-
-        elif new_chunk.ID == MAT_SELFI_MASK:
-            read_texture(new_chunk, temp_chunk, 'LUMINOUS')
-
-        elif new_chunk.ID == MAT_REFL_MASK:
-            read_texture(new_chunk, temp_chunk, 'REFLECTION')
-
-        # If cursor location
-        elif CURSOR and new_chunk.ID == O_CONSTS:
-            context.scene.cursor.location = read_float_array(new_chunk)
-
-        # If ambient light chunk
-        elif CreateWorld and new_chunk.ID == AMBIENTLIGHT:
-            path, filename = os.path.split(file.name)
-            realname, ext = os.path.splitext(filename)
-            contextWorld = bpy.data.worlds.new("Ambient: " + realname)
-            context.scene.world = contextWorld
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                contextWorld.color[:] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                contextWorld.color[:] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If background chunk
-        elif CreateWorld and new_chunk.ID == SOLIDBACKGND:
-            backgroundcolor = mathutils.Color((0.1, 0.1, 0.1))
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Background: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            worldnodes = contextWorld.node_tree.nodes
-            backgroundnode = worldnodes['Background']
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                backgroundcolor = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                backgroundcolor = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            backgroundmix = next((wn for wn in worldnodes if wn.type in {'MIX', 'MIX_RGB'}), False)
-            backgroundnode.inputs[0].default_value[:3] = backgroundcolor
-            if backgroundmix:
-                backgroundmix.inputs[2].default_value[:3] = backgroundcolor
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If bitmap chunk
-        elif CreateWorld and new_chunk.ID == BITMAP:
-            bitmap_name, read_str_len = read_string(file)
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Bitmap: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            bitmap_mix = nodes.new(type='ShaderNodeMixRGB')
-            bitmapnode = nodes.new(type='ShaderNodeTexEnvironment')
-            bitmapping = nodes.new(type='ShaderNodeMapping')
-            bitmap_mix.label = "Background Mix"
-            bitmapnode.label = "Bitmap: " + bitmap_name
-            bitmap_mix.inputs[2].default_value = nodes['Background'].inputs[0].default_value
-            bitmapnode.image = load_image(bitmap_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
-            bitmap_mix.inputs[0].default_value = 0.5 if bitmapnode.image is not None else 1.0
-            coordinate = nodes.get("Texture Coordinate", nodes.new(type='ShaderNodeTexCoord'))
-            bitmapnode.location = (-520, 400)
-            bitmap_mix.location = (-200, 360)
-            bitmapping.location = (-740, 400)
-            coordinate.location = (-1340, 400)
-            links.new(bitmap_mix.outputs[0], nodes['Background'].inputs[0])
-            links.new(bitmapnode.outputs[0], bitmap_mix.inputs[1])
-            links.new(bitmapping.outputs[0], bitmapnode.inputs[0])
-            if not bitmapping.inputs['Vector'].is_linked:
-                links.new(coordinate.outputs[0], bitmapping.inputs[0])
-            new_chunk.bytes_read += read_str_len
-
-        # If gradient chunk:
-        elif CreateWorld and new_chunk.ID == VGRADIENT:
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Gradient: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            gradientnode = nodes.new(type='ShaderNodeValToRGB')
-            layerweight = nodes.new(type='ShaderNodeLayerWeight')
-            conversion = nodes.new(type='ShaderNodeMath')
-            normalnode = nodes.new(type='ShaderNodeNormal')
-            mappingnode = nodes.get("Mapping", False)
-            coordinates = nodes.get("Texture Coordinate", False)
-            backgroundmix = next((wn for wn in nodes if wn.type in {'MIX', 'MIX_RGB'}), False)
-            conversion.location = (-740, -60)
-            layerweight.location = (-940, 170)
-            normalnode.location = (-1140, 300)
-            gradientnode.location = (-520, -20)
-            gradientnode.label = "Gradient"
-            conversion.operation = 'MULTIPLY_ADD'
-            conversion.name = conversion.label = "Multiply"
-            links.new(conversion.outputs[0], gradientnode.inputs[0])
-            links.new(layerweight.outputs[1], conversion.inputs[0])
-            links.new(layerweight.outputs[0], conversion.inputs[1])
-            links.new(normalnode.outputs[1], conversion.inputs[2])
-            links.new(normalnode.outputs[0], layerweight.inputs[1])
-            links.new(normalnode.outputs[1], layerweight.inputs[0])
-            if not coordinates:
-                coordinates = nodes.new(type='ShaderNodeTexCoord')
-                coordinates.location = (-1340, 400)
-            links.new(coordinates.outputs[6], normalnode.inputs[0])
-            if backgroundmix:
-                links.new(gradientnode.outputs[0], backgroundmix.inputs[2])
-            else:
-                links.new(gradientnode.outputs[0], nodes['Background'].inputs[0])
-            if mappingnode and not mappingnode.inputs['Vector'].is_linked:
-                links.new(coordinates.outputs[0], mappingnode.inputs[0])
-            gradientnode.color_ramp.elements.new(read_float(new_chunk))
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                gradientnode.color_ramp.elements[0].color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                gradientnode.color_ramp.elements[0].color[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                gradientnode.color_ramp.elements[1].color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                gradientnode.color_ramp.elements[1].color[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                gradientnode.color_ramp.elements[2].color[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                gradientnode.color_ramp.elements[2].color[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If fog chunk:
-        elif CreateWorld and new_chunk.ID == FOG:
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("Fog: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            fognode = nodes.new(type='ShaderNodeVolumeAbsorption')
-            fognode.label = "Fog"
-            fognode.location = (10, 20)
-            volumemix = nodes.get("Volume", False)
-            if volumemix:
-                links.new(fognode.outputs[0], volumemix.inputs[1])
-            else:
-                links.new(fognode.outputs[0], nodes['World Output'].inputs[1])
-            contextWorld.mist_settings.use_mist = True
-            contextWorld.mist_settings.start = read_float(new_chunk)
-            nearfog = read_float(new_chunk) * 0.01
-            contextWorld.mist_settings.depth = read_float(new_chunk)
-            farfog = read_float(new_chunk) * 0.01
-            fognode.inputs[1].default_value = (nearfog + farfog) * 0.5
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                fognode.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                fognode.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-        elif CreateWorld and new_chunk.ID == FOG_BGND:
-            pass
-
-        # If layer fog chunk:
-        elif CreateWorld and new_chunk.ID == LAYER_FOG:
-            """Fog options flags are bit 20 (0x100000) for background fogging,
-               bit 0 (0x1) for bottom falloff, and bit 1 (0x2) for top falloff."""
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("LayerFog: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            worldout = nodes.get("World Output")
-            worldfog = worldout.inputs[1]
-            layerfog = nodes.new(type='ShaderNodeVolumeScatter')
-            litepath = nodes.get("Light Path", nodes.new('ShaderNodeLightPath'))
-            fognode = nodes.get("Volume Absorption", False)
-            if fognode:
-                cuenode = nodes.get("Map Range", False)
-                mxvolume = nodes.new(type='ShaderNodeMixShader')
-                mxvolume.label = mxvolume.name = "Volume"
-                mxvolume.location = (220, 0)
-                cuesource = cuenode.outputs[0] if cuenode else litepath.outputs[7]
-                cuetarget = cuenode.inputs[3] if cuenode else mxvolume.inputs[0]
-                links.new(fognode.outputs[0], mxvolume.inputs[1])
-                links.new(litepath.outputs[7], cuetarget)
-                links.new(cuesource, mxvolume.inputs[0])
-                links.new(mxvolume.outputs[0], worldfog)
-                worldfog = mxvolume.inputs[2]
-            layerfog.label = "Layer Fog"
-            layerfog.location = (10, -120)
-            worldout.location = (440, 160)
-            litepath.location = (-200, 70)
-            links.new(layerfog.outputs[0], worldfog)
-            links.new(litepath.outputs[8], layerfog.inputs[2])
-            links.new(litepath.outputs[0], nodes['Background'].inputs[1])
-            contextWorld.mist_settings.use_mist = True
-            contextWorld.mist_settings.start = read_float(new_chunk)
-            contextWorld.mist_settings.height = read_float(new_chunk)
-            density = read_float(new_chunk)  # Density
-            layerfog.inputs[1].default_value = density if density < 1 else density * 0.01
-            layerfog_flag = read_long(new_chunk)
-            if layerfog_flag == 0:
-                contextWorld.mist_settings.falloff = 'LINEAR'
-            if layerfog_flag & 0x1:
-                contextWorld.mist_settings.falloff = 'QUADRATIC'
-            if layerfog_flag & 0x2:
-                contextWorld.mist_settings.falloff = 'INVERSE_QUADRATIC'
-            read_chunk(file, temp_chunk)
-            if temp_chunk.ID == COLOR_F:
-                layerfog.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            elif temp_chunk.ID == LIN_COLOR_F:
-                layerfog.inputs[0].default_value[:3] = read_float_array(temp_chunk)
-            else:
-                skip_to_end(file, temp_chunk)
-            new_chunk.bytes_read += temp_chunk.bytes_read
-
-        # If distance cue chunk:
-        elif CreateWorld and new_chunk.ID == DISTANCE_CUE:
-            if contextWorld is None:
-                path, filename = os.path.split(file.name)
-                realname, ext = os.path.splitext(filename)
-                contextWorld = bpy.data.worlds.new("DistanceCue: " + realname)
-                context.scene.world = contextWorld
-            contextWorld.use_nodes = True
-            links = contextWorld.node_tree.links
-            nodes = contextWorld.node_tree.nodes
-            distcue_node = nodes.new(type='ShaderNodeMapRange')
-            camera_data = nodes.new(type='ShaderNodeCameraData')
-            distcue_node.label = "Distance Cue"
-            distcue_node.clamp = False
-            distcue_mix = nodes.get("Volume", False)
-            distcuepath = nodes.get("Light Path", False)
-            if not distcuepath:
-                distcuepath = nodes.new(type='ShaderNodeLightPath')
-            distcue_node.location = (-940, 10)
-            distcuepath.location = (-1140, 70)
-            camera_data.location = (-1340, 166)
-            raysource = distcuepath.outputs[7] if distcue_mix else distcuepath.outputs[0]
-            raytarget = distcue_mix.inputs[0] if distcue_mix else nodes['Background'].inputs[1]
-            links.new(camera_data.outputs[1], distcue_node.inputs[1])
-            links.new(camera_data.outputs[2], distcue_node.inputs[0])
-            links.new(raysource, distcue_node.inputs[4])
-            links.new(distcue_node.outputs[0], raytarget)
-            distcue_node.inputs[0].name = "Distance"
-            distcue_node.inputs[2].name = "Near"
-            distcue_node.inputs[3].name = "Far"
-            distcue_node.inputs[1].default_value = read_float(new_chunk)  # Near Cue
-            distcue_node.inputs[2].default_value = read_float(new_chunk)  # Near Dim
-            distcue_node.inputs[4].default_value = contextWorld.light_settings.distance = read_float(new_chunk)  # Far Cue
-            distcue_node.inputs[3].default_value = read_float(new_chunk)  # Far Dim
-        elif CreateWorld and new_chunk.ID == DCUE_BGND:
-            pass
-
-        elif CreateWorld and new_chunk.ID in {USE_FOG, USE_LAYER_FOG}:
-            context.view_layer.use_pass_mist = True
-
-        # If object chunk - can be mesh, light and spot or camera
-        elif new_chunk.ID == OBJECT:
-            if CreateBlenderObject:
-                putContextMesh(context, contextMesh_vertls, contextMesh_facels, contextMesh_flag,
-                               contextMeshMaterials, contextMesh_smooth, contextRender_flag, contextShadow_flag)
-
-                contextMesh_vertls = []
-                contextMesh_facels = []
-                contextMeshMaterials = []
-                contextRender_flag = True
-                contextShadow_flag = True
-                contextMesh_flag = None
-                contextMesh_smooth = None
-                contextMeshUV = None
-
-            CreateBlenderObject = True if CreateMesh else False
-            CreateLightObject = CreateCameraObject = False
-            contextObName, read_str_len = read_string(file)
-            new_chunk.bytes_read += read_str_len
-
-        # If mesh chunk
-        elif new_chunk.ID == OBJECT_MESH:
-            pass
-
-        elif CreateMesh and new_chunk.ID == OBJECT_VERTICES:
-            """Worldspace vertex locations"""
-            num_verts = read_short(new_chunk)
-            contextMesh_vertls = struct.unpack('<%df' % (num_verts * 3), file.read(SZ_3FLOAT * num_verts))
-            new_chunk.bytes_read += SZ_3FLOAT * num_verts
-
-        elif CreateMesh and new_chunk.ID == OBJECT_FACES:
-            num_faces = read_short(new_chunk)
-            temp_data = file.read(SZ_4U_SHORT * num_faces)
-            new_chunk.bytes_read += SZ_4U_SHORT * num_faces  # 4 short ints x 2 bytes each
-            contextMesh_facels = struct.unpack('<%dH' % (num_faces * 4), temp_data)
-            contextMesh_flag = [contextMesh_facels[i] for i in range(3, (num_faces * 4) + 3, 4)]
-            contextMesh_facels = [contextMesh_facels[i - 3:i] for i in range(3, (num_faces * 4) + 3, 4)]
-
-        elif CreateMesh and new_chunk.ID == OBJECT_MATERIAL:
-            material_name, read_str_len = read_string(file)
-            new_chunk.bytes_read += read_str_len  # remove 1 null character.
-            num_faces_using_mat = read_short(new_chunk)
-            temp_data = file.read(SZ_U_SHORT * num_faces_using_mat)
-            new_chunk.bytes_read += SZ_U_SHORT * num_faces_using_mat
-            temp_data = struct.unpack('<%dH' % (num_faces_using_mat), temp_data)
-            contextMeshMaterials.append((material_name, temp_data))
-            # look up the material in all the materials
-
-        elif CreateMesh and new_chunk.ID == OBJECT_SMOOTH:
-            temp_data = file.read(SZ_U_INT * num_faces)
-            smoothgroup = struct.unpack('<%dI' % (num_faces), temp_data)
-            new_chunk.bytes_read += SZ_U_INT * num_faces
-            contextMesh_smooth = smoothgroup
-
-        elif CreateMesh and new_chunk.ID == OBJECT_UV:
-            num_uv = read_short(new_chunk)
-            temp_data = file.read(SZ_2FLOAT * num_uv)
-            new_chunk.bytes_read += SZ_2FLOAT * num_uv
-            contextMeshUV = struct.unpack('<%df' % (num_uv * 2), temp_data)
-
-        elif CreateMesh and new_chunk.ID == OBJECT_TRANS_MATRIX:
-            # How do we know the matrix size? 54 == 4x4 48 == 4x3
-            temp_data = file.read(SZ_4x3MAT)
-            mtx = list(struct.unpack('<ffffffffffff', temp_data))
-            new_chunk.bytes_read += SZ_4x3MAT
-            matrix = mathutils.Matrix((mtx[:3]+[0], mtx[3:6]+[0], mtx[6:9]+[0], mtx[9:]+[1])).transposed()
-            matrix_dictionary[contextObName] = matrix
-
-        elif CreateMesh and new_chunk.ID == OBJECT_NOLOFTER:
-            contextRender_flag = False
-        elif CreateMesh and new_chunk.ID == OBJECT_NOSHADOW:
-            contextShadow_flag = False
-
-        # If hierarchy chunk
-        elif CreateMesh and new_chunk.ID == OBJECT_HIERARCHY:
-            child_id = get_hierarchy(new_chunk)
-        elif CreateMesh and new_chunk.ID == OBJECT_PARENT:
-            get_parent(new_chunk, child_id)
-
-        # If light chunk
-        elif new_chunk.ID == OBJECT_LIGHT:  # Basic lamp support
-            CreateBlenderObject = False
-            if not CreateLight:
-                contextObName = None
-                skip_to_end(file, new_chunk)
-            else:
-                CreateLightObject = True
-                light = bpy.data.lights.new(contextObName, 'POINT')
-                contextLamp = bpy.data.objects.new(contextObName, light)
-                context.view_layer.active_layer_collection.collection.objects.link(contextLamp)
-                imported_objects.append(contextLamp)
-                object_dictionary[contextObName] = contextLamp
-                contextLamp.data.use_shadow = False
-                contextLamp.location = read_float_array(new_chunk)  # Position
-        elif CreateLightObject and new_chunk.ID == COLOR_F:  # Color
-            contextLamp.data.color = read_float_array(new_chunk)
-        elif CreateLightObject and new_chunk.ID == LIGHT_OUTER_RANGE:  # Distance
-            contextLamp.data.cutoff_distance = read_float(new_chunk)
-        elif CreateLightObject and new_chunk.ID == LIGHT_INNER_RANGE:  # Radius
-            contextLamp.data.shadow_soft_size = (read_float(new_chunk) * 0.01)
-        elif CreateLightObject and new_chunk.ID == LIGHT_MULTIPLIER:  # Intensity
-            contextLamp.data.energy = (read_float(new_chunk) * 1000)
-        elif CreateLightObject and new_chunk.ID == LIGHT_ATTENUATE:  # Attenuation
-            contextLamp.data.use_custom_distance = True
-
-        # If spotlight chunk
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOTLIGHT:  # Spotlight
-            contextLamp.data.type = 'SPOT'
-            spot = mathutils.Vector(read_float_array(new_chunk))  # Spot location
-            aim = calc_target(contextLamp.location, spot)  # Target
-            contextLamp.rotation_euler.x = aim[0]
-            contextLamp.rotation_euler.z = aim[1]
-            hotspot = read_float(new_chunk)  # Hotspot
-            beam_angle = read_float(new_chunk)  # Beam angle
-            contextLamp.data.spot_size = math.radians(beam_angle)
-            contextLamp.data.spot_blend = 1.0 - (hotspot / beam_angle)
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_ROLL:  # Roll
-            contextLamp.rotation_euler.y = read_float(new_chunk)
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_SHADOWED:  # Shadow flag
-            contextLamp.data.use_shadow = True
-        elif CreateLightObject and new_chunk.ID == LIGHT_LOCAL_SHADOW2:  # Shadow parameters
-            if contextLamp.data.get('shadow_buffer_bias') is not None:
-                contextLamp.data.shadow_buffer_bias = read_float(new_chunk)
-            else:
-                read_float(new_chunk)
-            contextLamp.data.shadow_buffer_clip_start = (read_float(new_chunk) * 0.1)
-            temp_data = file.read(SZ_U_SHORT)
-            new_chunk.bytes_read += SZ_U_SHORT
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_SEE_CONE:  # Cone flag
-            contextLamp.data.show_cone = True
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_RECTANGLE:  # Square flag
-            contextLamp.data.use_square = True
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_ASPECT:  # Aspect
-            contextLamp.empty_display_size = read_float(new_chunk)
-        elif CreateLightObject and new_chunk.ID == LIGHT_SPOT_PROJECTOR:  # Projection
-            contextLamp.data.use_nodes = True
-            nodes = contextLamp.data.node_tree.nodes
-            links = contextLamp.data.node_tree.links
-            mix = nodes.new(type='ShaderNodeMixRGB')
-            rgb = nodes.new(type='ShaderNodeRGB')
-            mix.blend_type = 'LINEAR_LIGHT'
-            mix.label = "Emission Color"
-            emit = nodes.get("Emission")
-            emit.label = "Projector"
-            emit.location = (80, 300)
-            rgb.location = (-380, 60)
-            mix.location = (-140, 340)
-            gobo_name, read_str_len = read_string(file)
-            new_chunk.bytes_read += read_str_len
-            projection = nodes.new(type='ShaderNodeTexImage')
-            promapping = nodes.new(type='ShaderNodeMapping')
-            protxcoord = nodes.new(type='ShaderNodeTexCoord')
-            prolitpath = nodes.new(type='ShaderNodeLightPath')
-            prolitfall = nodes.new(type='ShaderNodeLightFalloff')
-            projection.label = "Gobo: " + gobo_name
-            protxcoord.label = "Gobo Coordinate"
-            promapping.vector_type = 'TEXTURE'
-            prolitfall.location = (-720, 20)
-            projection.location = (-480, 440)
-            promapping.location = (-720, 440)
-            protxcoord.location = (-940, 440)
-            prolitpath.location = (-940, 180)
-            projection.image = load_image(gobo_name, dirname, place_holder=False, recursive=IMAGE_SEARCH, check_existing=True)
-            emit.inputs[0].default_value[:3] = mix.inputs[2].default_value[:3] = rgb.outputs[0].default_value[:3] = contextLamp.data.color
-            links.new(emit.outputs[0], nodes['Light Output'].inputs[0])
-            links.new(promapping.outputs[0], projection.inputs[0])
-            links.new(protxcoord.outputs[2], promapping.inputs[0])
-            links.new(prolitpath.outputs[8], prolitfall.inputs[0])
-            links.new(prolitpath.outputs[7], prolitfall.inputs[1])
-            links.new(prolitfall.outputs[1], emit.inputs[1])
-            links.new(prolitfall.outputs[0], mix.inputs[0])
-            links.new(projection.outputs[0], mix.inputs[1])
-            links.new(mix.outputs[0], emit.inputs[0])
-            links.new(rgb.outputs[0], mix.inputs[2])
-        elif CreateLightObject and new_chunk.ID == OBJECT_HIERARCHY:  # Hierarchy
-            child_id = get_hierarchy(new_chunk)
-        elif CreateLightObject and new_chunk.ID == OBJECT_PARENT:
-            get_parent(new_chunk, child_id)
-
-        # If camera chunk
-        elif new_chunk.ID == OBJECT_CAMERA:  # Basic camera support
-            CreateBlenderObject = False
-            if not CreateCamera:
-                contextObName = None
-                skip_to_end(file, new_chunk)
-            else:
-                CreateCameraObject = True
-                camera = bpy.data.cameras.new(contextObName)
-                contextCamera = bpy.data.objects.new(contextObName, camera)
-                context.view_layer.active_layer_collection.collection.objects.link(contextCamera)
-                imported_objects.append(contextCamera)
-                object_dictionary[contextObName] = contextCamera
-                contextCamera.location = read_float_array(new_chunk)  # Position
-                focus = mathutils.Vector(read_float_array(new_chunk))
-                direction = calc_target(contextCamera.location, focus)  # Target
-                contextCamera.rotation_euler.x = direction[0]
-                contextCamera.rotation_euler.y = read_float(new_chunk)  # Roll
-                contextCamera.rotation_euler.z = direction[1]
-                contextCamera.data.lens = read_float(new_chunk)  # Focal length
-        elif CreateCameraObject and new_chunk.ID == OBJECT_CAM_RANGES:  # Range
-            camrange = max(read_float(new_chunk), 0.01)
-            endrange = max(read_float(new_chunk), 100)
-            startrange = camrange if camrange < 50 else camrange * 0.001
-            contextCamera.data.clip_start = startrange * CONSTRAIN
-            contextCamera.data.clip_end = endrange* CONSTRAIN
-        elif CreateCameraObject and new_chunk.ID == OBJECT_HIERARCHY:  # Hierarchy
-            child_id = get_hierarchy(new_chunk)
-        elif CreateCameraObject and new_chunk.ID == OBJECT_PARENT:
-            get_parent(new_chunk, child_id)
-
-        # start keyframe section
-        elif new_chunk.ID == EDITKEYFRAME:
-            pass
-
-        elif KEYFRAME and new_chunk.ID == KFDATA_KFSEG:
-            start = read_long(new_chunk)
-            context.scene.frame_start = start
-            stop = read_long(new_chunk)
-            context.scene.frame_end = stop
-
-        elif KEYFRAME and new_chunk.ID == KFDATA_CURTIME:
-            current = read_long(new_chunk)
-            context.scene.frame_current = current
-
-        # including these here means their OB_NODE_HDR are scanned
-        elif new_chunk.ID in {KF_AMBIENT, KF_OBJECT, KF_OBJECT_CAMERA, KF_OBJECT_LIGHT, KF_OBJECT_SPOT_LIGHT}:
-            tracktype = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[1]
-            tracking = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[-1]
-            spotting = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[-2]
-            object_id = hierarchy = ROOT_OBJECT
-            trackposition.clear()
-            child = None
-            if not CreateWorld and tracking == 'AMBIENT':
-                skip_to_end(file, new_chunk)
-            if not CreateLight and tracking == 'LIGHT':
-                skip_to_end(file, new_chunk)
-            if not CreateCamera and tracking == 'CAMERA':
-                skip_to_end(file, new_chunk)
-
-        elif new_chunk.ID in {KF_TARGET_CAMERA, KF_TARGET_LIGHT}:
-            tracktype = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[1]
-            tracking = str([kf for kf,ck in globals().items() if ck == new_chunk.ID][0]).split("_")[-1]
-            child = None
-            if not CreateLight and tracking == 'LIGHT':
-                skip_to_end(file, new_chunk)
-            if not CreateCamera and tracking == 'CAMERA':
-                skip_to_end(file, new_chunk)
-
-        elif new_chunk.ID == OBJECT_NODE_ID:
-            object_id = read_short(new_chunk)
-
-        elif new_chunk.ID == OBJECT_NODE_HDR:
-            object_name, read_str_len = read_string(file)
-            new_chunk.bytes_read += read_str_len
-            temp_data = file.read(SZ_U_INT)
-            new_chunk.bytes_read += SZ_U_INT
-            hierarchy = read_short(new_chunk)
-            child = object_dictionary.get(object_name)
-            if child is None:
-                if CreateWorld and tracking == 'AMBIENT':
-                    child = context.scene.world
-                    child.use_nodes = True
-                    nodetree = child.node_tree
-                    links = nodetree.links
-                    nodes = nodetree.nodes
-                    backlite = nodes.get("Background")
-                    worldout = nodes.get("World Output")
-                    ambilite = nodes.new(type='ShaderNodeRGB')
-                    raymixer = nodes.new(type='ShaderNodeMix')
-                    mathnode = nodes.new(type='ShaderNodeMath')
-                    ambinode = nodes.new(type='ShaderNodeEmission')
-                    mixshade = nodes.new(type='ShaderNodeMixShader')
-                    litefall = nodes.new(type='ShaderNodeLightFalloff')
-                    raymixer.label = "Ambient Mix"
-                    ambilite.label = "Ambient Color"
-                    raymixer.inputs[3].name = "Ambient"
-                    raymixer.inputs[2].name = "Background"
-                    mixshade.label = mixshade.name = "Surface"
-                    litepath = nodes.get("Light Path", False)
-                    ambinode.inputs[0].default_value[:3] = child.color
-                    if not litepath:
-                        litepath = nodes.new('ShaderNodeLightPath')
-                    ambinode.location = (10, 160)
-                    worldout.location = (440, 160)
-                    mixshade.location = (220, 280)
-                    ambilite.location = (-200, -30)
-                    raymixer.location = (-200, 170)
-                    litepath.location = (-1340, 70)
-                    mathnode.location = (-1140, 100)
-                    litefall.location = (-1140, -80)
-                    links.new(litepath.outputs[0], mathnode.inputs[0])
-                    links.new(litepath.outputs[3], mathnode.inputs[1])
-                    links.new(litepath.outputs[5], litefall.inputs[0])
-                    links.new(litepath.outputs[2], litefall.inputs[1])
-                    links.new(litefall.outputs[0], raymixer.inputs[2])
-                    links.new(mathnode.outputs[0], backlite.inputs[1])
-                    links.new(mathnode.outputs[0], ambinode.inputs[1])
-                    links.new(mathnode.outputs[0], raymixer.inputs[3])
-                    links.new(raymixer.outputs[0], mixshade.inputs[0])
-                    links.new(ambinode.outputs[0], mixshade.inputs[2])
-                    links.new(ambilite.outputs[0], ambinode.inputs[0])
-                    links.new(mixshade.outputs[0], worldout.inputs[0])
-                    links.new(backlite.outputs[0], mixshade.inputs[1])
-                    ambinode.label = object_name if object_name != '$AMBIENT$' else "Ambient"
-                elif CreateEmpty and tracking == 'OBJECT' and object_name == '$$$DUMMY':
-                    child = bpy.data.objects.new(object_name, None)  # Create an empty object
-                    context.view_layer.active_layer_collection.collection.objects.link(child)
-                    imported_objects.append(child)
-                else:
-                    tracking = tracktype = None
-            if tracktype != 'TARGET' and tracking != 'AMBIENT':
-                object_dict[object_id] = child
-                object_list.append(child)
-                object_parent.append(hierarchy)
-                pivot_list.append(mathutils.Vector((0.0, 0.0, 0.0)))
-
-        elif new_chunk.ID == PARENT_NAME:
-            parent_name, read_str_len = read_string(file)
-            parent_dictionary.setdefault(parent_name, []).append(child)
-            new_chunk.bytes_read += read_str_len
-
-        elif new_chunk.ID == OBJECT_INSTANCE_NAME and tracking == 'OBJECT':
-            instance_name, read_str_len = read_string(file)
-            if child.name == '$$$DUMMY':
-                child.name = instance_name
-            else:  # Child is an instance
-                child = bpy.data.objects.new(object_name + '.' + instance_name.split('.')[-1], child.data.copy())
-                context.view_layer.active_layer_collection.collection.objects.link(child)
-                matrix_dictionary[child.name] = matrix_dictionary.get(object_name, mathutils.Matrix()).copy()
-                imported_objects.append(child)
-                object_list[-1] = child
-            object_dictionary[child.name] = child
-            new_chunk.bytes_read += read_str_len
-
-        elif new_chunk.ID == OBJECT_PIVOT and tracking == 'OBJECT':  # Pivot
-            pivot = read_float_array(new_chunk)
-            pivot_list[len(pivot_list) - 1] = mathutils.Vector(pivot)
-
-        elif new_chunk.ID == MORPH_SMOOTH and tracking == 'OBJECT':  # Smooth angle
-            smooth_angle = read_float(new_chunk)
-            if child.data is not None:  # Check if child is a dummy
-                child.data.set_sharp_from_angle(angle=smooth_angle)
-
-        elif KEYFRAME and new_chunk.ID == COL_TRACK_TAG and tracking == 'AMBIENT':  # Ambient
-            keyframe_data = {}
-            keyframe_data[0] = ambinode.inputs[0].default_value[:3] = child.color[:]
-            child.color = read_track_data(new_chunk)[0]
-            ambilite.outputs[0].default_value[:3] = child.color
-            for keydata in keyframe_data.items():
-                child.color = ambilite.outputs[0].default_value[:3] = keydata[1]
-                child.keyframe_insert(data_path="color", frame=keydata[0])
-                nodetree.keyframe_insert(data_path="nodes[\"RGB\"].outputs[0].default_value", frame=keydata[0])
-            contextTrack_flag = False
-
-        elif KEYFRAME and new_chunk.ID == COL_TRACK_TAG and tracking == 'LIGHT':  # Color
-            keyframe_data = {}
-            keyframe_data[0] = child.data.color[:]
-            child.data.color = read_track_data(new_chunk)[0]
-            child.data.use_nodes = True
-            tree = child.data.node_tree
-            emitnode = tree.nodes.get("Emission")
-            emitnode.inputs[0].default_value[:3] = child.data.color
-            colornode = tree.nodes.get("RGB", False)
-            lightfall = tree.nodes.get("Light Falloff", False)
-            if not colornode:
-                colornode = tree.nodes.new('ShaderNodeRGB')
-                colornode.location = (-380, 60)
-                tree.links.new(colornode.outputs[0], emitnode.inputs[0])
-            if not lightfall:
-                lightfall = tree.nodes.new('ShaderNodeLightFalloff')
-                lightpath = tree.nodes.new('ShaderNodeLightPath')
-                lightfall.location = (-720, 20)
-                lightpath.location = (-940, 180)
-                tree.links.new(lightpath.outputs[8], lightfall.inputs[0])
-                tree.links.new(lightpath.outputs[7], lightfall.inputs[1])
-            tree.links.new(lightfall.outputs[1], emitnode.inputs[1])
-            colornode.outputs[0].default_value[:3] = child.data.color
-            for keydata in keyframe_data.items():
-                child.data.color = colornode.outputs[0].default_value[:3] = keydata[1]
-                child.data.keyframe_insert(data_path="color", frame=keydata[0])
-                tree.keyframe_insert(data_path="nodes[\"RGB\"].outputs[0].default_value", frame=keydata[0])
-            contextTrack_flag = False
-
-        elif KEYFRAME and new_chunk.ID == POS_TRACK_TAG and tracktype == 'OBJECT':  # Translation
-            keyframe_data = {}
-            keyframe_data[0] = child.location[:]
-            child.location = mathutils.Vector(read_track_data(new_chunk)[0])
-            if tracking == 'CAMERA' or spotting == 'SPOT':
-                trackposition.setdefault(child.name, []).append((0, child.location))
-            if contextTrack_flag & 0x8:  # Flag 0x8 locks X axis
-                child.lock_location[0] = True
-            if contextTrack_flag & 0x10:  # Flag 0x10 locks Y axis
-                child.lock_location[1] = True
-            if contextTrack_flag & 0x20:  # Flag 0x20 locks Z axis
-                child.lock_location[2] = True
-            for keydata in keyframe_data.items():
-                trackposition.setdefault(child.name, []).append((keydata[0], keydata[1]))  # Keep track to position
-                child.location = apply_constrain(keydata[1]) if hierarchy == ROOT_OBJECT else mathutils.Vector(keydata[1])
-                if MEASURE != 1.0:
-                    child.location = child.location * MEASURE
-                if hierarchy == ROOT_OBJECT:
-                    child.location.rotate(CONVERSE)
-                if not contextTrack_flag & 0x100:  # Flag 0x100 unlinks X axis
-                    child.keyframe_insert(data_path="location", index=0, frame=keydata[0])
-                if not contextTrack_flag & 0x200:  # Flag 0x200 unlinks Y axis
-                    child.keyframe_insert(data_path="location", index=1, frame=keydata[0])
-                if not contextTrack_flag & 0x400:  # Flag 0x400 unlinks Z axis
-                    child.keyframe_insert(data_path="location", index=2, frame=keydata[0])
-            contextTrack_flag = False
-
-        elif KEYFRAME and new_chunk.ID == POS_TRACK_TAG and tracktype == 'TARGET':  # Target position
-            keyframe_data = {}
-            location = child.location
-            keyframe_data[0] = dict(trackposition.get(child.name, [(0, location)]))[0]
-            target = mathutils.Vector(read_track_data(new_chunk)[0])
-            direction = calc_target(location, target)
-            child.rotation_euler.x = direction[0]
-            child.rotation_euler.z = direction[1]
-            for keydata in keyframe_data.items():
-                tracks = dict(trackposition.get(child.name, [(0, location)]))
-                locate = tracks.get(keydata[0], location)
-                target = mathutils.Vector(keydata[1])
-                direction = calc_target(mathutils.Vector(locate), target)
-                rotate = mathutils.Euler((direction[0], 0.0, direction[1]), 'XYZ').to_matrix()
-                scale = mathutils.Vector.Fill(3, (CONSTRAIN * 0.1)) if CONSTRAIN != 0.0 else child.scale
-                transformation = mathutils.Matrix.LocRotScale(locate, rotate, scale)
-                child.matrix_world = transformation
-                if MEASURE != 1.0:
-                    child.matrix_world = mathutils.Matrix.Scale(MEASURE,4) @ child.matrix_world
-                if hierarchy == ROOT_OBJECT:
-                    child.matrix_world = CONVERSE @ child.matrix_world
-                child.keyframe_insert(data_path="rotation_euler", index=0, frame=keydata[0])
-                child.keyframe_insert(data_path="rotation_euler", index=2, frame=keydata[0])
-            contextTrack_flag = False
-
-        elif KEYFRAME and new_chunk.ID == ROT_TRACK_TAG and tracktype == 'OBJECT':  # Rotation
-            keyframe_rotation = {}
-            keyframe_rotation[0] = child.rotation_axis_angle[:]
-            tflags = read_short(new_chunk)
-            temp_data = file.read(SZ_U_INT * 2)
-            new_chunk.bytes_read += SZ_U_INT * 2
-            nkeys = read_long(new_chunk)
-            if tflags & 0x8:  # Flag 0x8 locks X axis
-                child.lock_rotation[0] = True
-            if tflags & 0x10:  # Flag 0x10 locks Y axis
-                child.lock_rotation[1] = True
-            if tflags & 0x20:  # Flag 0x20 locks Z axis
-                child.lock_rotation[2] = True
-            for i in range(nkeys):
-                nframe = read_long(new_chunk)
-                nflags = read_short(new_chunk)
-                for f in range(bin(nflags)[-5:].count('1')):
-                    temp_data = file.read(SZ_FLOAT)  # Check for spline term values
-                    new_chunk.bytes_read += SZ_FLOAT
-                temp_data = file.read(SZ_4FLOAT)
-                rotation = struct.unpack('<4f', temp_data)
-                new_chunk.bytes_read += SZ_4FLOAT
-                keyframe_rotation[nframe] = rotation
-            rad, axis_x, axis_y, axis_z = keyframe_rotation[0]
-            cpt = matrix_dictionary.get(child.name, child.matrix_world).to_euler()
-            child.rotation_euler = mathutils.Quaternion((axis_x, axis_y, axis_z), -rad).to_euler('XYZ', cpt)  # Why negative?
-            for keydata in keyframe_rotation.items():
-                rad, axis_x, axis_y, axis_z = keydata[1]
-                child.rotation_euler = mathutils.Quaternion((axis_x, axis_y, axis_z), -rad).to_euler('XYZ', cpt)
-                if hierarchy == ROOT_OBJECT:
-                    child.rotation_euler.rotate(CONVERSE)
-                if not tflags & 0x100:  # Flag 0x100 unlinks X axis
-                    child.keyframe_insert(data_path="rotation_euler", index=0, frame=keydata[0])
-                if not tflags & 0x200:  # Flag 0x200 unlinks Y axis
-                    child.keyframe_insert(data_path="rotation_euler", index=1, frame=keydata[0])
-                if not tflags & 0x400:  # Flag 0x400 unlinks Z axis
-                    child.keyframe_insert(data_path="rotation_euler", index=2, frame=keydata[0])
-
-        elif KEYFRAME and new_chunk.ID == SCL_TRACK_TAG and tracktype == 'OBJECT':  # Scale
-            keyframe_data = {}
-            keyframe_data[0] = child.scale[:]
-            child.scale = mathutils.Vector(read_track_data(new_chunk)[0])
-            if contextTrack_flag & 0x8:  # Flag 0x8 locks X axis
-                child.lock_scale[0] = True
-            if contextTrack_flag & 0x10:  # Flag 0x10 locks Y axis
-                child.lock_scale[1] = True
-            if contextTrack_flag & 0x20:  # Flag 0x20 locks Z axis
-                child.lock_scale[2] = True
-            for keydata in keyframe_data.items():
-                child.scale = apply_constrain(keydata[1]) if hierarchy == ROOT_OBJECT else mathutils.Vector(keydata[1])
-                if not contextTrack_flag & 0x100:  # Flag 0x100 unlinks X axis
-                    child.keyframe_insert(data_path="scale", index=0, frame=keydata[0])
-                if not contextTrack_flag & 0x200:  # Flag 0x200 unlinks Y axis
-                    child.keyframe_insert(data_path="scale", index=1, frame=keydata[0])
-                if not contextTrack_flag & 0x400:  # Flag 0x400 unlinks Z axis
-                    child.keyframe_insert(data_path="scale", index=2, frame=keydata[0])
-            contextTrack_flag = False
-
-        elif KEYFRAME and new_chunk.ID == ROLL_TRACK_TAG and tracktype == 'OBJECT':  # Roll angle
-            keyframe_angle = {}
-            keyframe_angle[0] = child.rotation_euler.y
-            child.rotation_euler.y = read_track_angle(new_chunk)[0]
-            for keydata in keyframe_angle.items():
-                child.rotation_euler.y = keydata[1]
-                if hierarchy == ROOT_OBJECT:
-                    child.rotation_euler.rotate(CONVERSE)
-                child.keyframe_insert(data_path="rotation_euler", index=1, frame=keydata[0])
-
-        elif KEYFRAME and new_chunk.ID == FOV_TRACK_TAG and tracking == 'CAMERA':  # Field of view
-            keyframe_angle = {}
-            keyframe_angle[0] = child.data.angle
-            child.data.angle = read_track_angle(new_chunk)[0]
-            for keydata in keyframe_angle.items():
-                child.data.lens = (child.data.sensor_width / 2) / math.tan(keydata[1] / 2)
-                child.data.keyframe_insert(data_path="lens", frame=keydata[0])
-
-        elif KEYFRAME and new_chunk.ID == HOTSPOT_TRACK_TAG and tracking == 'LIGHT' and spotting == 'SPOT':  # Hotspot
-            keyframe_angle = {}
-            cone_angle = math.degrees(child.data.spot_size)
-            keyframe_angle[0] = cone_angle-(child.data.spot_blend * math.floor(cone_angle))
-            hot_spot = math.degrees(read_track_angle(new_chunk)[0])
-            child.data.spot_blend = 1.0 - (hot_spot / cone_angle)
-            for keydata in keyframe_angle.items():
-                child.data.spot_blend = 1.0 - (math.degrees(keydata[1]) / cone_angle)
-                child.data.keyframe_insert(data_path="spot_blend", frame=keydata[0])
-
-        elif KEYFRAME and new_chunk.ID == FALLOFF_TRACK_TAG and tracking == 'LIGHT' and spotting == 'SPOT':  # Falloff
-            keyframe_angle = {}
-            keyframe_angle[0] = math.degrees(child.data.spot_size)
-            child.data.spot_size = read_track_angle(new_chunk)[0]
-            for keydata in keyframe_angle.items():
-                child.data.spot_size = keydata[1]
-                child.data.keyframe_insert(data_path="spot_size", frame=keydata[0])
-
-        else:
-            buffer_size = new_chunk.length - new_chunk.bytes_read
-            binary_format = '%ic' % buffer_size
-            temp_data = file.read(struct.calcsize(binary_format))
-            new_chunk.bytes_read += buffer_size
-
-        # update the previous chunk bytes read
-        previous_chunk.bytes_read += new_chunk.bytes_read
-
-    # FINISHED LOOP - There will be a number of objects still not added
-    if CreateBlenderObject:
-        putContextMesh(context, contextMesh_vertls, contextMesh_facels, contextMesh_flag,
-                       contextMeshMaterials, contextMesh_smooth, contextRender_flag, contextShadow_flag)
-
-    # If hierarchy
-    hierarchy = dict(zip(childs_list, parent_list))
-    hierarchy.pop(None, ...)
-    for idt, (child, parent) in enumerate(hierarchy.items()):
-        child_obj = object_dictionary.get(child)
-        parent_obj = object_dictionary.get(parent)
-        if child_obj and parent_obj is not None:
-            child_obj.parent = parent_obj
-
-    # Assign parents to objects. Check if we need to assign first because doing so recalcs the depsgraph
-    parent_dictionary.pop(None, ...)
-    for ind, ob in enumerate(object_list):
-        if ob is None:
-            continue
-        parent = object_parent[ind]
-        found = ob in set().union(sum(parent_dictionary.values(), []))
-        if ob.name in parent_dictionary.keys():
-            kids = parent_dictionary.get(ob.name)
-            for kid in kids:
-                kid.parent = ob
-        elif not found:
-            if parent == ROOT_OBJECT:
-                ob.parent = None
-            elif parent not in object_dict:
-                parent = parent-1 if parent == object_list.index(ob) else parent
-                try:  # get parent from object list
-                    ob.parent = object_list[parent]
-                except Exception as exc:
-                    print("\tIndexError:", exc)
-            else:  # get parent from node_id number
-                try:
-                    ob.parent = object_dict.get(parent)
-                except:  # self to parent exception
-                    pass
-
-        # Fix Pivots
-        pivot = pivot_list[ind]
-        trans_matrix = matrix_dictionary.get(ob.name, mathutils.Matrix())
-        pivot_matrix = mathutils.Matrix.Translation(trans_matrix.to_3x3() @ -pivot)
-        if APPLY_MATRIX and ob.type == 'MESH':
+class tri_wrapper(object):
+    """Class representing a triangle.
+    Used when converting faces to triangles"""
+
+    __slots__ = "vertex_index", "ma", "image", "faceuvs", "offset", "flag", "group"
+
+    def __init__(self, vindex=(0, 0, 0), ma=None, image=None, faceuvs=None, flag=0, group=0):
+        self.vertex_index = vindex
+        self.ma = ma
+        self.image = image
+        self.faceuvs = faceuvs
+        self.offset = [0, 0, 0]  # Offset indices
+        self.flag = flag
+        self.group = group
+
+
+def extract_triangles(mesh):
+    """Extract triangles from a mesh."""
+
+    mesh.calc_loop_triangles()
+    (polygroup, count) = mesh.calc_smooth_groups(use_bitflags=True)
+
+    tri_list = []
+    do_uv = bool(mesh.uv_layers)
+
+    img = None
+    for i, face in enumerate(mesh.loop_triangles):
+        f_v = face.vertices
+        v1, v2, v3 = f_v
+        uf = mesh.uv_layers.active.data if do_uv else None
+
+        if do_uv:
+            f_uv = [uf[lp].uv for lp in face.loops]
+            for ma in mesh.materials:
+                img = get_uv_image(ma) if uf else None
+                if img is not None:
+                    img = img.name
+            uv1, uv2, uv3 = f_uv
+
+        """Flag 0x1 sets CA edge visible, Flag 0x2 sets BC edge visible, Flag 0x4 sets AB edge visible
+        Flag 0x8 indicates a U axis texture wrap seam and Flag 0x10 indicates a V axis texture wrap seam
+        In Blender we use the edge CA, BC, and AB flags for sharp edges flags."""
+        a_b = mesh.edges[mesh.loops[face.loops[0]].edge_index]
+        b_c = mesh.edges[mesh.loops[face.loops[1]].edge_index]
+        c_a = mesh.edges[mesh.loops[face.loops[2]].edge_index]
+
+        if v3 == 0:
+            v1, v2, v3 = v3, v1, v2
+            a_b, b_c, c_a = c_a, a_b, b_c
+            if do_uv:
+                uv1, uv2, uv3 = uv3, uv1, uv2
+
+        faceflag = 0
+        if c_a.use_edge_sharp:
+            faceflag |= 0x1
+        if b_c.use_edge_sharp:
+            faceflag |= 0x2
+        if a_b.use_edge_sharp:
+            faceflag |= 0x4
+
+        smoothgroup = polygroup[face.polygon_index]
+
+        if len(f_v) == 3:
+            new_tri = tri_wrapper((v1, v2, v3), face.material_index, img)
+            if (do_uv):
+                new_tri.faceuvs = uv_key(uv1), uv_key(uv2), uv_key(uv3)
+            new_tri.flag = faceflag
+            new_tri.group = smoothgroup if face.use_smooth else 0
+            tri_list.append(new_tri)
+
+    return tri_list
+
+
+def remove_face_uv(verts, tri_list):
+    """Remove face UV coordinates from a list of triangles.
+    Since 3ds files only support one pair of uv coordinates for each vertex, face uv coordinates
+    need to be converted to vertex uv coordinates. That means that vertices need to be duplicated when
+    there are multiple uv coordinates per vertex."""
+
+    # Initialize a list of UniqueUVs, one per vertex
+    unique_uvs = [{} for i in range(len(verts))]
+
+    # For each face uv coordinate, add it to the UniqueList of the vertex
+    for tri in tri_list:
+        for i in range(3):
+            context_uv_vert = unique_uvs[tri.vertex_index[i]]
+            uvkey = tri.faceuvs[i]
+            offset_index__uv_3ds = context_uv_vert.get(uvkey)
+            if not offset_index__uv_3ds:
+                offset_index__uv_3ds = context_uv_vert[uvkey] = len(context_uv_vert), _3ds_point_uv(uvkey)
+            tri.offset[i] = offset_index__uv_3ds[0]
+
+    # At this point each vertex has a UniqueList containing every uv coord associated with it only once
+    # Now we need to duplicate every vertex as many times as it has uv coordinates and make sure the
+    # faces refer to the new face indices
+    vert_index = 0
+    vert_array = _3ds_array()
+    uv_array = _3ds_array()
+    index_list = []
+    for i, vert in enumerate(verts):
+        index_list.append(vert_index)
+        pt = _3ds_point_3d(vert.co)  # reuse, should be ok
+        uvmap = [None] * len(unique_uvs[i])
+        for ii, uv_3ds in unique_uvs[i].values():
+            # Add a vertex duplicate to the vertex_array for every uv associated with this vertex
+            vert_array.add(pt)
+            # Add the uv coordinate to the uv array, this for loop does not give
+            # uv's ordered by ii, so we create a new map and add the uv's later
+            uvmap[ii] = uv_3ds
+
+        # Add uv's in the correct order and add coordinates to the uv array
+        for uv_3ds in uvmap:
+            uv_array.add(uv_3ds)
+        vert_index += len(unique_uvs[i])
+
+    # Make sure the triangle vertex indices now refer to the new vertex list
+    for tri in tri_list:
+        for i in range(3):
+            tri.offset[i] += index_list[tri.vertex_index[i]]
+        tri.vertex_index = tri.offset
+
+    return vert_array, uv_array, tri_list
+
+
+def make_faces_chunk(tri_list, mesh, materialDict):
+    """Make a chunk for the faces.
+    Also adds subchunks assigning materials to all faces."""
+    do_smooth = False
+    use_smooth = [poly.use_smooth for poly in mesh.polygons]
+    if True in use_smooth:
+        do_smooth = True
+
+    materials = mesh.materials
+    if not materials:
+        ma = None
+
+    face_chunk = _3ds_chunk(OBJECT_FACES)
+    face_list = _3ds_array()
+
+    if mesh.uv_layers:
+        # Gather materials used in this mesh - mat/image pairs
+        unique_mats = {}
+        for i, tri in enumerate(tri_list):
+            face_list.add(_3ds_face(tri.vertex_index, tri.flag))
+            if materials:
+                ma = materials[tri.ma]
+                if ma:
+                    ma = ma.name
+            img = tri.image
             try:
-                ob.data.transform(trans_matrix.inverted() @ pivot_matrix)
+                context_face_array = unique_mats[ma, img][1]
             except:
-                pass
+                name_str = ma if ma else "None"
+                context_face_array = _3ds_array()
+                unique_mats[ma, img] = _3ds_string(sane_name(name_str)), context_face_array
+            context_face_array.add(_3ds_ushort(i))
 
+        face_chunk.add_variable("faces", face_list)
+        for ma_name, ma_faces in unique_mats.values():
+            obj_material_chunk = _3ds_chunk(OBJECT_MATERIAL)
+            obj_material_chunk.add_variable("name", ma_name)
+            obj_material_chunk.add_variable("face_list", ma_faces)
+            face_chunk.add_subchunk(obj_material_chunk)
 
-##########
-# IMPORT #
-##########
-
-def load_3ds(filepath, context, CONSTRAIN=10.0, UNITS=False, IMAGE_SEARCH=True,
-             FILTER=None, KEYFRAME=True, APPLY_MATRIX=True, CONVERSE=None, CURSOR=False):
-
-    print("importing 3DS: %r..." % (Path(filepath).name), end="")
-
-    if bpy.ops.object.select_all.poll():
-        bpy.ops.object.select_all(action='DESELECT')
-
-    MEASURE = 1.0
-    duration = time.time()
-    current_chunk = Chunk()
-    file = open(filepath, 'rb')
-
-    # here we go!
-    read_chunk(file, current_chunk)
-    if current_chunk.ID != PRIMARY:
-        print("\tFatal Error:  Not a valid 3ds file: %r" % Path(filepath).name)
-        file.close()
-        return
-
-    if CONSTRAIN:
-        BOUNDS_3DS[:] = [1 << 30, 1 << 30, 1 << 30, -1 << 30, -1 << 30, -1 << 30]
     else:
-        del BOUNDS_3DS[:]
+        obj_material_faces = []
+        obj_material_names = []
+        for m in materials:
+            if m:
+                obj_material_names.append(_3ds_string(sane_name(m.name)))
+                obj_material_faces.append(_3ds_array())
+        n_materials = len(obj_material_names)
 
-    # fixme, make unglobal, clear in case
-    object_dictionary.clear()
-    parent_dictionary.clear()
-    matrix_dictionary.clear()
-    scn = context.scene
+        for i, tri in enumerate(tri_list):
+            face_list.add(_3ds_face(tri.vertex_index, tri.flag))
+            if (tri.ma < n_materials):
+                obj_material_faces[tri.ma].add(_3ds_ushort(i))
 
-    if UNITS:
-        unit_length = scn.unit_settings.length_unit
-        if unit_length == 'MILES':
-            MEASURE = 1609.344
-        elif unit_length == 'KILOMETERS':
-            MEASURE = 1000.0
-        elif unit_length == 'FEET':
-            MEASURE = 0.3048
-        elif unit_length == 'INCHES':
-            MEASURE = 0.0254
-        elif unit_length == 'CENTIMETERS':
-            MEASURE = 0.01
-        elif unit_length == 'MILLIMETERS':
-            MEASURE = 0.001
-        elif unit_length == 'THOU':
-            MEASURE = 0.0000254
-        elif unit_length == 'MICROMETERS':
-            MEASURE = 0.000001
+        face_chunk.add_variable("faces", face_list)
+        for i in range(n_materials):
+            obj_material_chunk = _3ds_chunk(OBJECT_MATERIAL)
+            obj_material_chunk.add_variable("name", obj_material_names[i])
+            obj_material_chunk.add_variable("face_list", obj_material_faces[i])
+            face_chunk.add_subchunk(obj_material_chunk)
 
-    if CONVERSE is None:
-        CONVERSE = mathutils.Matrix()
-    if FILTER is None:
-        FILTER = {'WORLD', 'MESH', 'LIGHT', 'CAMERA', 'EMPTY'}
+    if do_smooth:
+        obj_smooth_chunk = _3ds_chunk(OBJECT_SMOOTH)
+        for i, tri in enumerate(tri_list):
+            obj_smooth_chunk.add_variable("face_" + str(i), _3ds_uint(tri.group))
+        face_chunk.add_subchunk(obj_smooth_chunk)
 
+    return face_chunk
+
+
+def make_vert_chunk(vert_array):
+    """Make a vertex chunk out of an array of vertices."""
+    vert_chunk = _3ds_chunk(OBJECT_VERTICES)
+    vert_chunk.add_variable("vertices", vert_array)
+    return vert_chunk
+
+
+def make_uv_chunk(uv_array):
+    """Make a UV chunk out of an array of UVs."""
+    uv_chunk = _3ds_chunk(OBJECT_UV)
+    uv_chunk.add_variable("uv coords", uv_array)
+    return uv_chunk
+
+
+def make_mesh_chunk(ob, mesh, matrix, materialDict):
+    """Make a chunk out of a Blender mesh."""
+
+    # Extract the triangles from the mesh
+    tri_list = extract_triangles(mesh)
+
+    if mesh.uv_layers:
+        # Remove the face UVs and convert it to vertex UV
+        vert_array, uv_array, tri_list = remove_face_uv(mesh.vertices, tri_list)
+    else:
+        # Add the vertices to the vertex array
+        vert_array = _3ds_array()
+        for vert in mesh.vertices:
+            vert_array.add(_3ds_point_3d(vert.co))
+        # No UV at all
+        uv_array = None
+
+    # Create the chunk
+    mesh_chunk = _3ds_chunk(OBJECT_MESH)
+
+    # Add vertex and faces chunk
+    mesh_chunk.add_subchunk(make_vert_chunk(vert_array))
+    mesh_chunk.add_subchunk(make_faces_chunk(tri_list, mesh, materialDict))
+
+    # If available, add uv chunk
+    if uv_array:
+        mesh_chunk.add_subchunk(make_uv_chunk(uv_array))
+
+    # Create transformation matrix chunk
+    matrix_chunk = _3ds_chunk(OBJECT_TRANS_MATRIX)
+    obj_matrix = matrix.transposed().to_3x3()
+    obj_translate = matrix.to_translation()
+
+    matrix_chunk.add_variable("xx", _3ds_float(obj_matrix[0].to_tuple(6)[0]))
+    matrix_chunk.add_variable("xy", _3ds_float(obj_matrix[0].to_tuple(6)[1]))
+    matrix_chunk.add_variable("xz", _3ds_float(obj_matrix[0].to_tuple(6)[2]))
+    matrix_chunk.add_variable("yx", _3ds_float(obj_matrix[1].to_tuple(6)[0]))
+    matrix_chunk.add_variable("yy", _3ds_float(obj_matrix[1].to_tuple(6)[1]))
+    matrix_chunk.add_variable("yz", _3ds_float(obj_matrix[1].to_tuple(6)[2]))
+    matrix_chunk.add_variable("zx", _3ds_float(obj_matrix[2].to_tuple(6)[0]))
+    matrix_chunk.add_variable("zy", _3ds_float(obj_matrix[2].to_tuple(6)[1]))
+    matrix_chunk.add_variable("zz", _3ds_float(obj_matrix[2].to_tuple(6)[2]))
+    matrix_chunk.add_variable("tx", _3ds_float(obj_translate.to_tuple(6)[0]))
+    matrix_chunk.add_variable("ty", _3ds_float(obj_translate.to_tuple(6)[1]))
+    matrix_chunk.add_variable("tz", _3ds_float(obj_translate.to_tuple(6)[2]))
+
+    mesh_chunk.add_subchunk(matrix_chunk)
+
+    return mesh_chunk
+
+
+def calc_target(posi, tilt=0.0, pan=0.0):
+    """Calculate target position for cameras and spotlights."""
+    adjacent = math.radians(90)
+    turn = 0.0 if abs(pan) < adjacent else -0.0
+    lean = 0.0 if abs(tilt) > adjacent else -0.0
+    diagonal = math.sqrt(pow(posi.x ,2) + pow(posi.y ,2))
+    target_x = math.copysign(posi.x + (posi.y * math.tan(pan)), pan)
+    target_y = math.copysign(posi.y + (posi.x * math.tan(adjacent - pan)), turn)
+    target_z = math.copysign(posi.z + diagonal * math.tan(adjacent - tilt), lean)
+
+    return target_x, target_y, target_z
+
+
+#################
+# KEYFRAME DATA #
+#################
+
+def make_kfdata(revision, start=0, stop=100, curtime=0):
+    """Make the basic keyframe data chunk."""
+    kfdata = _3ds_chunk(KFDATA)
+
+    kfhdr = _3ds_chunk(KFDATA_KFHDR)
+    kfhdr.add_variable("revision", _3ds_ushort(revision))
+    kfhdr.add_variable("filename", _3ds_string(b'NRGSille'))
+    kfhdr.add_variable("animlen", _3ds_uint(stop - start))
+
+    kfseg = _3ds_chunk(KFDATA_KFSEG)
+    kfseg.add_variable("start", _3ds_uint(start))
+    kfseg.add_variable("stop", _3ds_uint(stop))
+
+    kfcurtime = _3ds_chunk(KFDATA_KFCURTIME)
+    kfcurtime.add_variable("curtime", _3ds_uint(curtime))
+
+    kfdata.add_subchunk(kfhdr)
+    kfdata.add_subchunk(kfseg)
+    kfdata.add_subchunk(kfcurtime)
+    return kfdata
+
+
+def make_track_chunk(ID, ob, ob_pos, ob_rot, ob_size, ob_mtx):
+    """Make a chunk for track data. Depending on the ID, this will construct
+    a position, rotation, scale, roll, color, fov, hotspot or falloff track."""
+    track_chunk = _3ds_chunk(ID)
+
+    if ID in {POS_TRACK_TAG, ROT_TRACK_TAG, SCL_TRACK_TAG, ROLL_TRACK_TAG} and ob.animation_data and ob.animation_data.action:
+        action = ob.animation_data.action
+        if action.fcurves:
+            fcurves = action.fcurves
+            kframes = [kf.co[0] for kf in [fc for fc in fcurves if fc is not None][0].keyframe_points]
+            nkeys = len(kframes)
+            if not 0 in kframes:
+                kframes.append(0)
+                nkeys += 1
+            kframes = sorted(set(kframes))
+            track_chunk.add_variable("track_flags", _3ds_ushort(0x40))
+            track_chunk.add_variable("frame_start", _3ds_uint(int(action.frame_start)))
+            track_chunk.add_variable("frame_total", _3ds_uint(int(action.frame_end)))
+            track_chunk.add_variable("nkeys", _3ds_uint(nkeys))
+
+            if ID == POS_TRACK_TAG:  # Position
+                for i, frame in enumerate(kframes):
+                    pos_track = [fc for fc in fcurves if fc is not None and fc.data_path == 'location']
+                    pos_x = next((tc.evaluate(frame) for tc in pos_track if tc.array_index == 0), ob_pos.x)
+                    pos_y = next((tc.evaluate(frame) for tc in pos_track if tc.array_index == 1), ob_pos.y)
+                    pos_z = next((tc.evaluate(frame) for tc in pos_track if tc.array_index == 2), ob_pos.z)
+                    pos = ob_mtx @ mathutils.Vector((pos_x, pos_y, pos_z))
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("position", _3ds_point_3d((pos.x, pos.y, pos.z)))
+
+            elif ID == ROT_TRACK_TAG:  # Rotation
+                for i, frame in enumerate(kframes):
+                    rot_track = [fc for fc in fcurves if fc is not None and fc.data_path == 'rotation_euler']
+                    rot_x = next((tc.evaluate(frame) for tc in rot_track if tc.array_index == 0), ob_rot.x)
+                    rot_y = next((tc.evaluate(frame) for tc in rot_track if tc.array_index == 1), ob_rot.y)
+                    rot_z = next((tc.evaluate(frame) for tc in rot_track if tc.array_index == 2), ob_rot.z)
+                    quat = mathutils.Euler((rot_x, rot_y, rot_z)).to_quaternion().inverted()
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("rotation", _3ds_point_4d((quat.angle, quat.axis.x, quat.axis.y, quat.axis.z)))
+
+            elif ID == SCL_TRACK_TAG:  # Scale
+                for i, frame in enumerate(kframes):
+                    scale_track = [fc for fc in fcurves if fc is not None and fc.data_path == 'scale']
+                    size_x = next((tc.evaluate(frame) for tc in scale_track if tc.array_index == 0), ob_size.x)
+                    size_y = next((tc.evaluate(frame) for tc in scale_track if tc.array_index == 1), ob_size.y)
+                    size_z = next((tc.evaluate(frame) for tc in scale_track if tc.array_index == 2), ob_size.z)
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("scale", _3ds_point_3d((size_x, size_y, size_z)))
+
+            elif ID == ROLL_TRACK_TAG:  # Roll
+                for i, frame in enumerate(kframes):
+                    roll_track = [fc for fc in fcurves if fc is not None and fc.data_path == 'rotation_euler']
+                    roll = next((tc.evaluate(frame) for tc in roll_track if tc.array_index == 1), ob_rot.y)
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("roll", _3ds_float(round(math.degrees(roll), 4)))
+
+    elif ID in {COL_TRACK_TAG, FOV_TRACK_TAG, HOTSPOT_TRACK_TAG, FALLOFF_TRACK_TAG} and ob.data.animation_data and ob.data.animation_data.action:
+        action = ob.data.animation_data.action
+        if action.fcurves:
+            fcurves = action.fcurves
+            kframes = [kf.co[0] for kf in [fc for fc in fcurves if fc is not None][0].keyframe_points]
+            nkeys = len(kframes)
+            if not 0 in kframes:
+                kframes.append(0)
+                nkeys += 1
+            kframes = sorted(set(kframes))
+            track_chunk.add_variable("track_flags", _3ds_ushort(0x40))
+            track_chunk.add_variable("frame_start", _3ds_uint(int(action.frame_start)))
+            track_chunk.add_variable("frame_total", _3ds_uint(int(action.frame_end)))
+            track_chunk.add_variable("nkeys", _3ds_uint(nkeys))
+
+            if ID == COL_TRACK_TAG:  # Color
+                for i, frame in enumerate(kframes):
+                    color = [fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == 'color']
+                    if not color:
+                        color = ob.data.color[:3]
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("color", _3ds_float_color(color))
+
+            elif ID == FOV_TRACK_TAG:  # Field of view
+                for i, frame in enumerate(kframes):
+                    lens = next((fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == 'lens'), ob.data.lens)
+                    fov = 2 * math.atan(ob.data.sensor_width / (2 * lens))
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("fov", _3ds_float(round(math.degrees(fov), 4)))
+
+            elif ID == HOTSPOT_TRACK_TAG:  # Hotspot
+                for i, frame in enumerate(kframes):
+                    beamsize = next((fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == 'spot_size'), ob.data.spot_size)
+                    blend = next((fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == 'spot_blend'), ob.data.spot_blend)
+                    hot_spot = math.degrees(beamsize) - (blend * math.floor(math.degrees(beamsize)))
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("hotspot", _3ds_float(round(hot_spot, 4)))
+
+            elif ID == FALLOFF_TRACK_TAG:  # Falloff
+                for i, frame in enumerate(kframes):
+                    fall_off = next((fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == 'spot_size'), ob.data.spot_size)
+                    track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                    track_chunk.add_variable("falloff", _3ds_float(round(math.degrees(fall_off), 4)))
+
+    else:
+        track_chunk.add_variable("track_flags", _3ds_ushort(0x40))  # Based on observation default flag is 0x40
+        track_chunk.add_variable("frame_start", _3ds_uint(0))
+        track_chunk.add_variable("frame_total", _3ds_uint(0))
+        track_chunk.add_variable("nkeys", _3ds_uint(1))
+        # Next section should be repeated for every keyframe, with no animation only one tag is needed
+        track_chunk.add_variable("tcb_frame", _3ds_uint(0))
+        track_chunk.add_variable("tcb_flags", _3ds_ushort())
+
+        # New method simply inserts the parameters
+        if ID == POS_TRACK_TAG:  # Position vector
+            track_chunk.add_variable("position", _3ds_point_3d(ob_pos))
+
+        elif ID == ROT_TRACK_TAG:  # Rotation (angle first [radians], followed by axis)
+            quat = ob_rot.to_quaternion().inverted()
+            track_chunk.add_variable("rotation", _3ds_point_4d((quat.angle, quat.axis.x, quat.axis.y, quat.axis.z)))
+
+        elif ID == SCL_TRACK_TAG:  # Scale vector
+            track_chunk.add_variable("scale", _3ds_point_3d(ob_size))
+
+        elif ID == ROLL_TRACK_TAG:  # Roll angle
+            track_chunk.add_variable("roll", _3ds_float(round(math.degrees(ob_rot.y), 4)))
+
+        elif ID == COL_TRACK_TAG:  # Color values
+            track_chunk.add_variable("color", _3ds_float_color(ob.data.color[:3]))
+
+        elif ID == FOV_TRACK_TAG:  # Field of view
+            track_chunk.add_variable("fov", _3ds_float(round(math.degrees(ob.data.angle), 4)))
+
+        elif ID == HOTSPOT_TRACK_TAG:  # Hotspot
+            beam_angle = math.degrees(ob.data.spot_size)
+            track_chunk.add_variable("hotspot", _3ds_float(round(beam_angle - (ob.data.spot_blend * math.floor(beam_angle)), 4)))
+
+        elif ID == FALLOFF_TRACK_TAG:  # Falloff
+            track_chunk.add_variable("falloff", _3ds_float(round(math.degrees(ob.data.spot_size), 4)))
+
+    return track_chunk
+
+
+def make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform):
+    """Make a node chunk for a Blender object. Takes Blender object as parameter.
+       Blender Empty objects are converted to dummy nodes."""
+
+    name = ob.name
+    if ob.type == 'CAMERA':
+        obj_node = _3ds_chunk(CAMERA_NODE_TAG)
+    elif ob.type == 'LIGHT':
+        obj_node = _3ds_chunk(LIGHT_NODE_TAG)
+        if ob.data.type == 'SPOT':
+            obj_node = _3ds_chunk(SPOT_NODE_TAG)
+    else:  # Main object node chunk
+        obj_node = _3ds_chunk(OBJECT_NODE_TAG)
+
+    # Chunk for the object ID from name_id dictionary:
+    obj_id_chunk = _3ds_chunk(OBJECT_NODE_ID)
+    obj_id_chunk.add_variable("node_id", _3ds_ushort(name_id[name]))
+    obj_node.add_subchunk(obj_id_chunk)
+
+    # Object node header with object name
+    obj_node_header_chunk = _3ds_chunk(OBJECT_NODE_HDR)
+    parent = ob.parent
+
+    if ob.type in EMPTYS:  # Forcing to use the real name for empties
+        # Empties called $$$DUMMY and use OBJECT_INSTANCE_NAME chunk as name
+        obj_node_header_chunk.add_variable("name", _3ds_string(b"$$$DUMMY"))
+        obj_node_header_chunk.add_variable("flags1", _3ds_ushort(0x4000))
+        obj_node_header_chunk.add_variable("flags2", _3ds_ushort(0))
+
+    else:  # Add flag variables - Based on observation flags1 is usually 0x0040 and 0x4000 for empty objects
+        obj_node_header_chunk.add_variable("name", _3ds_string(sane_name(name)))
+        obj_node_header_chunk.add_variable("flags1", _3ds_ushort(0x0040))
+        # Flag 0x01 display path 0x02 use autosmooth 0x04 object frozen 0x10 motion blur 0x20 material morph 0x40 mesh morph
+        if ob.type == 'MESH' and 'Smooth by Angle' in ob.modifiers:
+            obj_node_header_chunk.add_variable("flags2", _3ds_ushort(0x02))
+        else:
+            obj_node_header_chunk.add_variable("flags2", _3ds_ushort(0))
+    obj_node_header_chunk.add_variable("parent", _3ds_ushort(ROOT_OBJECT))
+
+    '''
+    # COMMENTED OUT FOR 2.42 RELEASE!! CRASHES 3DS MAX
+    # Check parent-child relationships:
+    if parent is None or parent.name not in name_id:
+        # If no parent, or parents name is not in dictionary, ID becomes -1:
+        obj_node_header_chunk.add_variable("parent", _3ds_ushort(-1))
+    else:  # Get the parent's ID from the name_id dictionary:
+        obj_node_header_chunk.add_variable("parent", _3ds_ushort(name_id[parent.name]))
+    '''
+
+    # Add subchunk for node header
+    obj_node.add_subchunk(obj_node_header_chunk)
+
+    # Alternatively use PARENT_NAME chunk for hierachy
+    if parent is not None and (parent.name in name_id):
+        obj_parent_name_chunk = _3ds_chunk(OBJECT_PARENT_NAME)
+        obj_parent_name_chunk.add_variable("parent", _3ds_string(sane_name(parent.name)))
+        obj_node.add_subchunk(obj_parent_name_chunk)
+
+    # Empty objects need to have an extra chunk for the instance name
+    if ob.type in EMPTYS:  # Will use a real object name for empties for now
+        obj_instance_name_chunk = _3ds_chunk(OBJECT_INSTANCE_NAME)
+        obj_instance_name_chunk.add_variable("name", _3ds_string(sane_name(name)))
+        obj_node.add_subchunk(obj_instance_name_chunk)
+
+    if ob.type == 'MESH' or ob.type in EMPTYS:  # Add a pivot point at the object center
+        pivot_pos = mathutils.Vector((0, 0, 0)) if use_apply_transform else position[name]
+        obj_pivot_chunk = _3ds_chunk(OBJECT_PIVOT)
+        obj_pivot_chunk.add_variable("pivot", _3ds_point_3d(pivot_pos))
+        obj_node.add_subchunk(obj_pivot_chunk)
+
+        # Create a bounding box from quadrant diagonal
+        obj_boundbox = _3ds_chunk(OBJECT_BOUNDBOX)
+        obj_boundbox.add_variable("min", _3ds_point_3d(ob.bound_box[0]))
+        obj_boundbox.add_variable("max", _3ds_point_3d(ob.bound_box[6]))
+        obj_node.add_subchunk(obj_boundbox)
+
+        # Add smooth angle if smooth modifier is used
+        if ob.type == 'MESH' and 'Smooth by Angle' in ob.modifiers:
+            obj_morph_smooth = _3ds_chunk(OBJECT_MORPH_SMOOTH)
+            obj_morph_smooth.add_variable("angle", _3ds_float(round(ob.modifiers['Smooth by Angle']['Input_1'], 6)))
+            obj_node.add_subchunk(obj_morph_smooth)
+
+    # Add track chunks for position, rotation, size and collect masterscale
+    ob_mtx = transmtx[name]
+    if parent is None or (parent.name not in name_id):
+        ob_pos = position[name] if use_apply_transform else mathutils.Vector((0, 0, 0))
+        ob_rot = rotation[name] if use_apply_transform else mathutils.Euler((0, 0, 0), 'XYZ')
+        ob_size = scale[name]
+
+    else:  # Use parent position and rotation as object center, no scale applied
+        pos_invert = (position[name] - position[parent.name]) @ rotation[parent.name].to_matrix()
+        rot_invert = rotation[name].to_quaternion() @ rotation[parent.name].to_quaternion().inverted()
+        ob_pos = pos_invert if use_apply_transform else position[parent.name]
+        ob_rot = rot_invert.to_euler() if use_apply_transform else rotation[parent.name]
+        ob_size = mathutils.Vector((1.0, 1.0, 1.0))
+
+    obj_node.add_subchunk(make_track_chunk(POS_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+
+    if ob.type == 'MESH' or ob.type in EMPTYS:
+        obj_node.add_subchunk(make_track_chunk(ROT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+    if ob.type =='CAMERA':
+        obj_node.add_subchunk(make_track_chunk(FOV_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(ROLL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+    if ob.type =='LIGHT':
+        obj_node.add_subchunk(make_track_chunk(COL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+    if ob.type == 'LIGHT' and ob.data.type == 'SPOT':
+        obj_node.add_subchunk(make_track_chunk(HOTSPOT_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(FALLOFF_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+        obj_node.add_subchunk(make_track_chunk(ROLL_TRACK_TAG, ob, ob_pos, ob_rot, ob_size, ob_mtx))
+
+    return obj_node
+
+
+def make_target_node(ob, name_id, transmtx, position, rotation):
+    """Make a target chunk for light and camera objects."""
+
+    name = ob.name
+    name_id["ø " + name] = len(name_id)
+    if ob.type == 'CAMERA':  # Add camera target
+        tar_node = _3ds_chunk(TARGET_NODE_TAG)
+    elif ob.type == 'LIGHT':  # Add spot target
+        tar_node = _3ds_chunk(LTARGET_NODE_TAG)
+
+    # Chunk for the object ID from name_id dictionary:
+    tar_id_chunk = _3ds_chunk(OBJECT_NODE_ID)
+    tar_id_chunk.add_variable("node_id", _3ds_ushort(name_id[name]))
+    tar_node.add_subchunk(tar_id_chunk)
+
+    # Object node header with object name
+    tar_node_header_chunk = _3ds_chunk(OBJECT_NODE_HDR)
+    # Targets get the same name as the object, flags1 is usually 0x0010 and parent ROOT_OBJECT
+    tar_node_header_chunk.add_variable("name", _3ds_string(sane_name(name)))
+    tar_node_header_chunk.add_variable("flags1", _3ds_ushort(0x0010))
+    tar_node_header_chunk.add_variable("flags2", _3ds_ushort(0))
+    tar_node_header_chunk.add_variable("parent", _3ds_ushort(ROOT_OBJECT))
+
+    # Add subchunk for node header
+    tar_node.add_subchunk(tar_node_header_chunk)
+
+    # Calculate target position
+    ob_mtx = transmtx[name]
+    ob_pos = position[name]
+    ob_rot = rotation[name]
+    target_pos = calc_target(ob_pos, ob_rot.x, ob_rot.z)
+
+    # Add track chunks for target position
+    track_chunk = _3ds_chunk(POS_TRACK_TAG)
+
+    if ob.animation_data and ob.animation_data.action:
+        action = ob.animation_data.action
+        if action.fcurves:
+            fcurves = action.fcurves
+            kframes = [kf.co[0] for kf in [fc for fc in fcurves if fc is not None][0].keyframe_points]
+            nkeys = len(kframes)
+            if not 0 in kframes:
+                kframes.append(0)
+                nkeys += 1
+            kframes = sorted(set(kframes))
+            track_chunk.add_variable("track_flags", _3ds_ushort(0x40))
+            track_chunk.add_variable("frame_start", _3ds_uint(int(action.frame_start)))
+            track_chunk.add_variable("frame_total", _3ds_uint(int(action.frame_end)))
+            track_chunk.add_variable("nkeys", _3ds_uint(nkeys))
+
+            for i, frame in enumerate(kframes):
+                loc_target = [fc for fc in fcurves if fc is not None and fc.data_path == 'location']
+                loc_x = next((tc.evaluate(frame) for tc in loc_target if tc.array_index == 0), ob_pos.x)
+                loc_y = next((tc.evaluate(frame) for tc in loc_target if tc.array_index == 1), ob_pos.y)
+                loc_z = next((tc.evaluate(frame) for tc in loc_target if tc.array_index == 2), ob_pos.z)
+                rot_target = [fc for fc in fcurves if fc is not None and fc.data_path == 'rotation_euler']
+                rot_x = next((tc.evaluate(frame) for tc in rot_target if tc.array_index == 0), ob_rot.x)
+                rot_z = next((tc.evaluate(frame) for tc in rot_target if tc.array_index == 2), ob_rot.z)
+                target_distance = ob_mtx @ mathutils.Vector((loc_x, loc_y, loc_z))
+                target_pos = calc_target(target_distance, rot_x, rot_z)
+                track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                track_chunk.add_variable("position", _3ds_point_3d(target_pos))
+
+    else:  # Track header
+        track_chunk.add_variable("track_flags", _3ds_ushort(0x40))  # Based on observation default flag is 0x40
+        track_chunk.add_variable("frame_start", _3ds_uint(0))
+        track_chunk.add_variable("frame_total", _3ds_uint(0))
+        track_chunk.add_variable("nkeys", _3ds_uint(1))
+        # Keyframe header
+        track_chunk.add_variable("tcb_frame", _3ds_uint(0))
+        track_chunk.add_variable("tcb_flags", _3ds_ushort())
+        track_chunk.add_variable("position", _3ds_point_3d(target_pos))
+
+    tar_node.add_subchunk(track_chunk)
+
+    return tar_node
+
+
+def make_ambient_node(world):
+    """Make an ambient node for the world color, if the color is animated."""
+
+    amb_color = world.color[:3]
+    amb_node = _3ds_chunk(AMBIENT_NODE_TAG)
+    track_chunk = _3ds_chunk(COL_TRACK_TAG)
+
+    # Chunk for the ambient ID is ROOT_OBJECT
+    amb_id_chunk = _3ds_chunk(OBJECT_NODE_ID)
+    amb_id_chunk.add_variable("node_id", _3ds_ushort(ROOT_OBJECT))
+    amb_node.add_subchunk(amb_id_chunk)
+
+    # Object node header, name is "$AMBIENT$" for ambient nodes
+    amb_node_header_chunk = _3ds_chunk(OBJECT_NODE_HDR)
+    amb_node_header_chunk.add_variable("name", _3ds_string(b"$AMBIENT$"))
+    amb_node_header_chunk.add_variable("flags1", _3ds_ushort(0x4000))  # Flags1 0x4000 for empty objects
+    amb_node_header_chunk.add_variable("flags2", _3ds_ushort(0))
+    amb_node_header_chunk.add_variable("parent", _3ds_ushort(ROOT_OBJECT))
+    amb_node.add_subchunk(amb_node_header_chunk)
+
+    if world.use_nodes and world.node_tree.animation_data.action:
+        ambioutput = 'EMISSION' ,'MIX_SHADER', 'WORLD_OUTPUT'
+        action = world.node_tree.animation_data.action
+        links = world.node_tree.links
+        ambilinks = [lk for lk in links if lk.from_node.type in {'EMISSION', 'RGB'} and lk.to_node.type in ambioutput]
+        if ambilinks and action.fcurves:
+            fcurves = action.fcurves
+            fcurves.update()
+            emission = next((lk.from_socket.node for lk in ambilinks if lk.to_node.type in ambioutput), False)
+            ambinode = next((lk.from_socket.node for lk in ambilinks if lk.to_node.type == 'EMISSION'), emission)
+            kframes = [kf.co[0] for kf in [fc for fc in fcurves if fc is not None][0].keyframe_points]
+            ambipath = ('nodes[\"RGB\"].outputs[0].default_value' if ambinode and ambinode.type == 'RGB' else
+                        'nodes[\"Emission\"].inputs[0].default_value')
+            nkeys = len(kframes)
+            if not 0 in kframes:
+                kframes.append(0)
+                nkeys = nkeys + 1
+            kframes = sorted(set(kframes))
+            track_chunk.add_variable("track_flags", _3ds_ushort(0x40))
+            track_chunk.add_variable("frame_start", _3ds_uint(int(action.frame_start)))
+            track_chunk.add_variable("frame_total", _3ds_uint(int(action.frame_end)))
+            track_chunk.add_variable("nkeys", _3ds_uint(nkeys))
+
+            for i, frame in enumerate(kframes):
+                ambient = [fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == ambipath]
+                if not ambient:
+                    ambient = amb_color
+                track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                track_chunk.add_variable("color", _3ds_float_color(ambient[:3]))
+
+    elif world.animation_data.action:
+        action = world.animation_data.action
+        if action.fcurves:
+            fcurves = action.fcurves
+            fcurves.update()
+            kframes = [kf.co[0] for kf in [fc for fc in fcurves if fc is not None][0].keyframe_points]
+            nkeys = len(kframes)
+            if not 0 in kframes:
+                kframes.append(0)
+                nkeys += 1
+            kframes = sorted(set(kframes))
+            track_chunk.add_variable("track_flags", _3ds_ushort(0x40))
+            track_chunk.add_variable("frame_start", _3ds_uint(int(action.frame_start)))
+            track_chunk.add_variable("frame_total", _3ds_uint(int(action.frame_end)))
+            track_chunk.add_variable("nkeys", _3ds_uint(nkeys))
+
+            for i, frame in enumerate(kframes):
+                ambient = [fc.evaluate(frame) for fc in fcurves if fc is not None and fc.data_path == 'color']
+                if not ambient:
+                    ambient = amb_color
+                track_chunk.add_variable("tcb_frame", _3ds_uint(int(frame)))
+                track_chunk.add_variable("tcb_flags", _3ds_ushort())
+                track_chunk.add_variable("color", _3ds_float_color(ambient))
+
+    else:  # Track header
+        track_chunk.add_variable("track_flags", _3ds_ushort(0x40))
+        track_chunk.add_variable("frame_start", _3ds_uint(0))
+        track_chunk.add_variable("frame_total", _3ds_uint(0))
+        track_chunk.add_variable("nkeys", _3ds_uint(1))
+        # Keyframe header
+        track_chunk.add_variable("tcb_frame", _3ds_uint(0))
+        track_chunk.add_variable("tcb_flags", _3ds_ushort())
+        track_chunk.add_variable("color", _3ds_float_color(amb_color))
+
+    amb_node.add_subchunk(track_chunk)
+
+    return amb_node
+
+
+##########
+# EXPORT #
+##########
+
+def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, global_matrix=None,
+             use_selection=False, use_apply_transform=True, object_filter=None, use_invisible=False,
+             use_keyframes=True, use_hierarchy=False, use_cursor=False):
+    """Save the Blender scene to a 3ds file."""
+
+    print("exporting 3DS: %r..." % (Path(filepath).name), end="")
+
+    # Time the export
+    duration = time.time()
     context.window.cursor_set('WAIT')
-    imported_objects = []  # Fill this list with objects
-    process_next_chunk(context, file, current_chunk, imported_objects, CONSTRAIN, FILTER,
-                       IMAGE_SEARCH, KEYFRAME, APPLY_MATRIX, CONVERSE, MEASURE, CURSOR)
+    scene = context.scene
+    layer = context.view_layer
+    depsgraph = context.evaluated_depsgraph_get()
+    world = scene.world
 
-    # fixme, make unglobal
-    object_dictionary.clear()
-    parent_dictionary.clear()
-    matrix_dictionary.clear()
+    mtx_scale = mathutils.Matrix.Scale((master_scale),4)
 
-    if UNITS:
-        unit_mtx = mathutils.Matrix.Scale(MEASURE,4)
-        for ob in imported_objects:
-            if ob.type == 'MESH':
-                ob.data.transform(unit_mtx)
+    if collection and not items:
+        item_collection = bpy.data.collections.get(collection)
+        if item_collection:
+            items = item_collection.all_objects
 
-    if CONVERSE and not KEYFRAME:
-        for ob in imported_objects:
-            ob.location.rotate(CONVERSE)
-            ob.rotation_euler.rotate(CONVERSE)
+    if global_matrix is None:
+        global_matrix = mathutils.Matrix()
 
-    # Select all new objects
-    for ob in imported_objects:
-        if ob.type == 'LIGHT' and ob.data.type == 'SPOT':
-            square = math.sqrt(pow(1.0,2) + pow(1.0,2))
-            aspect = ob.empty_display_size
-            ob.scale.x = (aspect * square / (math.sqrt(pow(aspect,2) + 1.0)))
-            ob.scale.y = (square / (math.sqrt(pow(aspect,2) + 1.0)))
-            ob.scale.z = 1.0
-        ob.select_set(True)
+    if bpy.ops.object.mode_set.poll():
+        bpy.ops.object.mode_set(mode='OBJECT')
 
-    context.view_layer.update()
+    # Initialize the main chunk (primary)
+    primary = _3ds_chunk(PRIMARY)
 
-    axis_min = [1000000000] * 3
-    axis_max = [-1000000000] * 3
-    global_clamp_size = CONSTRAIN * 10000
-    if global_clamp_size != 0.0:
-        # Get all object bounds
-        for ob in imported_objects:
-            for v in ob.bound_box:
-                for axis, value in enumerate(v):
-                    if axis_min[axis] > value:
-                        axis_min[axis] = value
-                    if axis_max[axis] < value:
-                        axis_max[axis] = value
+    # Add version chunk
+    version_chunk = _3ds_chunk(VERSION)
+    version_chunk.add_variable("version", _3ds_uint(3))
+    primary.add_subchunk(version_chunk)
 
-        # Scale objects
-        max_axis = max(axis_max[0] - axis_min[0],
-                       axis_max[1] - axis_min[1],
-                       axis_max[2] - axis_min[2])
-        scale = 1.0
+    # Init main object info chunk
+    object_info = _3ds_chunk(OBJECTINFO)
+    mesh_version = _3ds_chunk(MESHVERSION)
+    mesh_version.add_variable("mesh", _3ds_uint(3))
+    object_info.add_subchunk(mesh_version)
 
-        while global_clamp_size < max_axis * scale:
-            scale = scale / 10.0
+    # Init main keyframe data chunk
+    if use_keyframes:
+        revision = 0x0005
+        stop = scene.frame_end
+        start = scene.frame_start
+        curtime = scene.frame_current
+        kfdata = make_kfdata(revision, start, stop, curtime)
 
-        mtx_scale = mathutils.Matrix.Scale(scale, 4)
-        for obj in imported_objects:
-            if obj.parent is None:
-                obj.matrix_world = mtx_scale @ obj.matrix_world
+    # Make a list of all materials used in the selected meshes (use dictionary, each material is added once)
+    materialDict = {}
+    mesh_objects = []
+    free_objects = []
 
-        for screen in bpy.data.screens:
-            for area in screen.areas:
-                if area.type == 'VIEW_3D':
-                    area.spaces[0].clip_start = max(scale * 0.1 * MEASURE, 0.01)
-                    area.spaces[0].clip_end = max(scale * 10000 * MEASURE, 1000)
+    if object_filter is None:
+        object_filter = {'MESH', 'LIGHT', 'CAMERA', 'EMPTY', 'OTHER'}
 
-    context.window.cursor_set('DEFAULT')
-    print(" done in %.4f sec." % (time.time() - duration))
+    if 'OTHER' in object_filter:
+        object_filter.remove('OTHER')
+        object_filter.update(DUMMYS)
+        object_filter.update(OTHERS)
+        EMPTYS.update(DUMMYS)
+
+    if use_selection and not use_invisible:
+        objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer) and ob.select_get(view_layer=layer)]
+    elif use_selection and use_invisible:
+        objects = [ob for ob in items if ob.type in object_filter and ob.select_get(view_layer=layer) or ob.hide_get(view_layer=layer) or
+                   not ob.visible_get(view_layer=layer) or ob.users_collection and ob.users_collection[0].hide_viewport]
+    elif not use_selection and not use_invisible:
+        objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer)]
+    else:
+        objects = [ob for ob in items if ob.type in object_filter]
+
+    empty_objects = [ob for ob in objects if ob.type in EMPTYS]
+    light_objects = [ob for ob in objects if ob.type == 'LIGHT']
+    camera_objects = [ob for ob in objects if ob.type == 'CAMERA']
+
+    for ob in objects:
+        # Get derived objects
+        derived_dict = bpy_extras.io_utils.create_derived_objects(depsgraph, [ob])
+        derived = derived_dict.get(ob)
+        if derived is None:
+            continue
+
+        for ob_derived, mtx in derived:
+            if ob.type not in {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}:
+                continue
+
+            if ob_derived.type in OTHERS:
+                item = ob_derived.evaluated_get(depsgraph)
+                data = bpy.data.meshes.new_from_object(item, preserve_all_data_layers=True, depsgraph=depsgraph)
+                free_objects.append(data)
+            else:
+                try:
+                    data = ob_derived.to_mesh()
+                except:
+                    data = None
+
+            if data:
+                matrix = mtx @ global_matrix if use_apply_transform else global_matrix
+                data.transform(mtx_scale @ matrix)
+                mesh_objects.append((ob_derived, data, matrix))
+                ma_ls = data.materials
+                ma_ls_len = len(ma_ls)
+
+                # Get material/image tuples
+                if data.uv_layers:
+                    if not ma_ls:
+                        ma = ma_name = None
+                    for f, uf in zip(data.polygons, data.uv_layers.active.data):
+                        if ma_ls:
+                            ma_index = f.material_index
+                            if ma_index >= ma_ls_len:
+                                ma_index = f.material_index = 0
+                            ma = ma_ls[ma_index]
+                            ma_name = None if ma is None else ma.name
+                        # Else there already set to none
+
+                        img = get_uv_image(ma)
+                        img_name = None if img is None else img.name
+                        materialDict.setdefault((ma_name, img_name), (ma, img))
+                else:
+                    for ma in ma_ls:
+                        if ma:  # Material may be None so check its not
+                            materialDict.setdefault((ma.name, None), (ma, None))
+
+                    # Why 0 Why!
+                    for f in data.polygons:
+                        if f.material_index >= ma_ls_len:
+                            f.material_index = 0
+
+
+    # Make MATERIAL chunks for all materials used in the meshes
+    for ma_image in materialDict.values():
+        object_info.add_subchunk(make_material_chunk(ma_image[0], ma_image[1]))
+
+    # Add MASTERSCALE element
+    mscale = _3ds_chunk(MASTERSCALE)
+    mscale.add_variable("scale", _3ds_float(1.0))
+    object_info.add_subchunk(mscale)
+
+    # Add 3D cursor location
+    if use_cursor:
+        cursor_chunk = _3ds_chunk(O_CONSTS)
+        cursor_chunk.add_variable("cursor", _3ds_point_3d(scene.cursor.location))
+        object_info.add_subchunk(cursor_chunk)
+
+    # Add AMBIENT color
+    if world is not None and 'WORLD' in object_filter:
+        ambient_chunk = _3ds_chunk(AMBIENTLIGHT)
+        ambient_light = _3ds_chunk(RGB)
+        ambient_light.add_variable("ambient", _3ds_float_color(world.color))
+        ambient_chunk.add_subchunk(ambient_light)
+        object_info.add_subchunk(ambient_chunk)
+
+        # Add BACKGROUND and BITMAP
+        if world.use_nodes:
+            bgtype = 'BACKGROUND'
+            ntree = world.node_tree.links
+            background_color_chunk = _3ds_chunk(RGB)
+            background_chunk = _3ds_chunk(SOLIDBACKGND)
+            background_flag = _3ds_chunk(USE_SOLIDBGND)
+            bgmixer = 'BACKGROUND', 'MIX', 'MIX_RGB'
+            bgshade = 'ADD_SHADER', 'MIX_SHADER', 'OUTPUT_WORLD'
+            bg_tex = 'TEX_IMAGE', 'TEX_ENVIRONMENT'
+            bg_cue = 'BACKGROUND', 'EMISSION', 'MIX', 'MIX_RGB', 'MIX_SHADER'
+            bg_color = next((lk.from_node.inputs[0].default_value[:3] for lk in ntree if lk.from_node.type == bgtype and lk.to_node.type in bgshade), world.color)
+            bg_mixer = next((lk.from_node.type for lk in ntree if  lk.from_node.type in bgmixer and lk.to_node.type == bgtype), bgtype)
+            bg_image = next((lk.from_node.image for lk in ntree if lk.from_node.type in bg_tex and lk.to_node.type == bg_mixer), False)
+            gradient = next((lk.from_node.color_ramp.elements for lk in ntree if lk.from_node.type == 'VALTORGB' and lk.to_node.type in bgmixer), False)
+            background_color_chunk.add_variable("color", _3ds_float_color(bg_color))
+            background_chunk.add_subchunk(background_color_chunk)
+            if bg_image and bg_image is not None:
+                background_image = _3ds_chunk(BITMAP)
+                background_flag = _3ds_chunk(USE_BITMAP)
+                background_image.add_variable("image", _3ds_string(sane_name(bg_image.name)))
+                object_info.add_subchunk(background_image)
+            object_info.add_subchunk(background_chunk)
+
+            # Add VGRADIENT chunk
+            if gradient and len(gradient) >= 3:
+                gradient_chunk = _3ds_chunk(VGRADIENT)
+                background_flag = _3ds_chunk(USE_VGRADIENT)
+                gradient_chunk.add_variable("midpoint", _3ds_float(gradient[1].position))
+                gradient_topcolor_chunk = _3ds_chunk(RGB)
+                gradient_topcolor_chunk.add_variable("color", _3ds_float_color(gradient[0].color[:3]))
+                gradient_chunk.add_subchunk(gradient_topcolor_chunk)
+                gradient_midcolor_chunk = _3ds_chunk(RGB)
+                gradient_midcolor_chunk.add_variable("color", _3ds_float_color(gradient[1].color[:3]))
+                gradient_chunk.add_subchunk(gradient_midcolor_chunk)
+                gradient_lowcolor_chunk = _3ds_chunk(RGB)
+                gradient_lowcolor_chunk.add_variable("color", _3ds_float_color(gradient[2].color[:3]))
+                gradient_chunk.add_subchunk(gradient_lowcolor_chunk)
+                object_info.add_subchunk(gradient_chunk)
+            object_info.add_subchunk(background_flag)
+
+            # Add FOG
+            fognode = next((lk.from_socket.node for lk in ntree if lk.from_socket.node.type == 'VOLUME_ABSORPTION' and lk.to_socket.node.type in bgshade), False)
+            if fognode:
+                fog_chunk = _3ds_chunk(FOG)
+                fog_color_chunk = _3ds_chunk(RGB)
+                use_atmo_flag = _3ds_chunk(USE_FOG)
+                fog_density = fognode.inputs['Density'].default_value * 100
+                fog_color_chunk.add_variable("color", _3ds_float_color(fognode.inputs[0].default_value[:3]))
+                fog_chunk.add_variable("nearplane", _3ds_float(world.mist_settings.start))
+                fog_chunk.add_variable("nearfog", _3ds_float(fog_density * 0.5))
+                fog_chunk.add_variable("farplane", _3ds_float(world.mist_settings.depth))
+                fog_chunk.add_variable("farfog", _3ds_float(fog_density + fog_density * 0.5))
+                fog_chunk.add_subchunk(fog_color_chunk)
+                object_info.add_subchunk(fog_chunk)
+
+            # Add LAYER FOG
+            foglayer = next((lk.from_socket.node for lk in ntree if lk.from_socket.node.type == 'VOLUME_SCATTER' and lk.to_socket.node.type in bgshade), False)
+            if foglayer:
+                layerfog_flag = 0
+                if world.mist_settings.falloff == 'QUADRATIC':
+                    layerfog_flag |= 0x1
+                if world.mist_settings.falloff == 'INVERSE_QUADRATIC':
+                    layerfog_flag |= 0x2
+                layerfog_chunk = _3ds_chunk(LAYER_FOG)
+                layerfog_color_chunk = _3ds_chunk(RGB)
+                use_atmo_flag = _3ds_chunk(USE_LAYER_FOG)
+                layerfog_color_chunk.add_variable("color", _3ds_float_color(foglayer.inputs[0].default_value[:3]))
+                layerfog_chunk.add_variable("lowZ", _3ds_float(world.mist_settings.start))
+                layerfog_chunk.add_variable("highZ", _3ds_float(world.mist_settings.height))
+                layerfog_chunk.add_variable("density", _3ds_float(foglayer.inputs[1].default_value))
+                layerfog_chunk.add_variable("flags", _3ds_uint(layerfog_flag))
+                layerfog_chunk.add_subchunk(layerfog_color_chunk)
+                object_info.add_subchunk(layerfog_chunk)
+
+            # Add DISTANCE CUE
+            distcue = next((lk.from_socket.node for lk in ntree if lk.from_socket.node.type == 'MAP_RANGE' and lk.to_socket.node.type in bg_cue), False)
+            if distcue:
+                distance_cue_chunk = _3ds_chunk(DISTANCE_CUE)
+                use_atmo_flag = _3ds_chunk(USE_DISTANCE_CUE)
+                distance_cue_chunk.add_variable("nearcue", _3ds_float(distcue.inputs[1].default_value))
+                distance_cue_chunk.add_variable("neardim", _3ds_float(distcue.inputs[2].default_value))
+                distance_cue_chunk.add_variable("farcue", _3ds_float(distcue.inputs[4].default_value))
+                distance_cue_chunk.add_variable("fardim", _3ds_float(distcue.inputs[3].default_value))
+                object_info.add_subchunk(distance_cue_chunk)
+            if fognode or foglayer or distcue and layer.use_pass_mist:
+                object_info.add_subchunk(use_atmo_flag)
+        if use_keyframes and world.animation_data or (world.node_tree and world.node_tree.animation_data):
+            kfdata.add_subchunk(make_ambient_node(world))
+
+    # Give all objects a unique ID and build a dictionary from object name to object id
+    object_id = {}
+    name_id = {}
+    transmtx = {}
+    position = {}
+    rotation = {}
+    scale = {}
+
+    for ob, data, matrix in mesh_objects:
+        name_id[ob.name] = len(name_id)
+        object_id[ob.name] = len(object_id)
+        transmtx[ob.name] = mtx_scale.copy()
+        position[ob.name] = mtx_scale @ matrix.to_translation()
+        rotation[ob.name] = matrix.to_euler()
+        scale[ob.name] = mtx_scale @ matrix.to_scale()
+
+    for ob in empty_objects:
+        name_id[ob.name] = len(name_id)
+        transmtx[ob.name] = mtx_scale.copy()
+        position[ob.name] = mtx_scale @ ob.location
+        rotation[ob.name] = ob.rotation_euler
+        scale[ob.name] = mtx_scale @ ob.scale
+
+    for ob in light_objects:
+        name_id[ob.name] = len(name_id)
+        object_id[ob.name] = len(object_id)
+        transmtx[ob.name] = mtx_scale.copy()
+        position[ob.name] = mtx_scale @ ob.location
+        rotation[ob.name] = ob.rotation_euler
+        scale[ob.name] = mtx_scale @ ob.scale
+
+    for ob in camera_objects:
+        name_id[ob.name] = len(name_id)
+        object_id[ob.name] = len(object_id)
+        transmtx[ob.name] = mtx_scale.copy()
+        position[ob.name] = mtx_scale @ ob.location
+        rotation[ob.name] = ob.rotation_euler
+        scale[ob.name] = mtx_scale @ ob.scale
+
+    # Create object chunks for all meshes
+    i = 0
+    for ob, mesh, matrix in mesh_objects:
+        object_chunk = _3ds_chunk(OBJECT)
+
+        # Set the object name
+        object_chunk.add_variable("name", _3ds_string(sane_name(ob.name)))
+
+        # Make a mesh chunk out of the mesh
+        object_chunk.add_subchunk(make_mesh_chunk(ob, mesh, matrix, materialDict))
+        if ob.hide_render:
+            obj_no_render_chunk = _3ds_chunk(OBJECT_NOLOFTER)
+            object_chunk.add_subchunk(obj_no_render_chunk)
+        if not ob.visible_shadow:
+            obj_no_shadow_chunk = _3ds_chunk(OBJECT_NOSHADOW)
+            object_chunk.add_subchunk(obj_no_shadow_chunk)
+
+        # Add hierachy chunk with ID from object_id dictionary
+        if use_hierarchy:
+            obj_hierarchy_chunk = _3ds_chunk(OBJECT_HIERARCHY)
+            obj_hierarchy_chunk.add_variable("hierarchy", _3ds_ushort(object_id[ob.name]))
+
+            # Add parent chunk if object has a parent
+            if ob.parent is not None and (ob.parent.name in object_id):
+                obj_parent_chunk = _3ds_chunk(OBJECT_PARENT)
+                obj_parent_chunk.add_variable("parent", _3ds_ushort(object_id[ob.parent.name]))
+                obj_hierarchy_chunk.add_subchunk(obj_parent_chunk)
+            object_chunk.add_subchunk(obj_hierarchy_chunk)
+
+        # ensure the mesh has no over sized arrays - skip ones that do!
+        # Otherwise we cant write since the array size wont fit into USHORT
+        if object_chunk.validate():
+            object_info.add_subchunk(object_chunk)
+        else:
+            operator.report({'WARNING'}, "Object %r can't be written into a 3DS file" % ob.name)
+
+        # Export object node
+        if use_keyframes and not use_hierarchy:
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
+
+        i += i
+
+    # Create chunks for all empties - only requires a object node
+    if use_keyframes and not use_hierarchy:
+        for ob in empty_objects:
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
+
+    # Create light object chunks
+    for ob in light_objects:
+        object_chunk = _3ds_chunk(OBJECT)
+        obj_light_chunk = _3ds_chunk(OBJECT_LIGHT)
+        color_float_chunk = _3ds_chunk(RGB)
+        light_distance = position[ob.name]
+        light_attenuate = _3ds_chunk(LIGHT_ATTENUATE)
+        light_inner_range = _3ds_chunk(LIGHT_INNER_RANGE)
+        light_outer_range = _3ds_chunk(LIGHT_OUTER_RANGE)
+        light_energy_factor = _3ds_chunk(LIGHT_MULTIPLIER)
+        light_ratio = ob.data.energy if ob.data.type == 'SUN' else ob.data.energy * 0.001
+        object_chunk.add_variable("light", _3ds_string(sane_name(ob.name)))
+        obj_light_chunk.add_variable("location", _3ds_point_3d(light_distance))
+        color_float_chunk.add_variable("color", _3ds_float_color(ob.data.color))
+        light_outer_range.add_variable("distance", _3ds_float(ob.data.cutoff_distance))
+        light_inner_range.add_variable("radius", _3ds_float(ob.data.shadow_soft_size * 100))
+        light_energy_factor.add_variable("energy", _3ds_float(light_ratio))
+        obj_light_chunk.add_subchunk(color_float_chunk)
+        obj_light_chunk.add_subchunk(light_outer_range)
+        obj_light_chunk.add_subchunk(light_inner_range)
+        obj_light_chunk.add_subchunk(light_energy_factor)
+        if ob.data.use_custom_distance:
+            obj_light_chunk.add_subchunk(light_attenuate)
+
+        if ob.data.type == 'SPOT':
+            cone_angle = math.degrees(ob.data.spot_size)
+            hot_spot = cone_angle - (ob.data.spot_blend * math.floor(cone_angle))
+            spot_pos = calc_target(light_distance, rotation[ob.name].x, rotation[ob.name].z)
+            spotlight_chunk = _3ds_chunk(LIGHT_SPOTLIGHT)
+            spot_roll_chunk = _3ds_chunk(LIGHT_SPOT_ROLL)
+            spotlight_chunk.add_variable("target", _3ds_point_3d(spot_pos))
+            spotlight_chunk.add_variable("hotspot", _3ds_float(round(hot_spot, 4)))
+            spotlight_chunk.add_variable("angle", _3ds_float(round(cone_angle, 4)))
+            spot_roll_chunk.add_variable("roll", _3ds_float(round(rotation[ob.name].y, 6)))
+            spotlight_chunk.add_subchunk(spot_roll_chunk)
+            if ob.data.use_shadow:
+                spot_shadow_flag = _3ds_chunk(LIGHT_SPOT_SHADOWED)
+                spot_shadow_chunk = _3ds_chunk(LIGHT_SPOT_LSHADOW)
+                if ob.data.get('shadow_buffer_bias') is None:
+                    spot_shadow_chunk.add_variable("bias", _3ds_float(1.0))
+                else:
+                    spot_shadow_chunk.add_variable("bias", _3ds_float(round(ob.data.shadow_buffer_bias,4)))
+                spot_shadow_chunk.add_variable("filter", _3ds_float(round((ob.data.shadow_buffer_clip_start * 10),4)))
+                spot_shadow_chunk.add_variable("buffer", _3ds_ushort(0x200))
+                spotlight_chunk.add_subchunk(spot_shadow_flag)
+                spotlight_chunk.add_subchunk(spot_shadow_chunk)
+            if ob.data.show_cone:
+                spot_cone_chunk = _3ds_chunk(LIGHT_SPOT_SEE_CONE)
+                spotlight_chunk.add_subchunk(spot_cone_chunk)
+            if ob.data.use_square:
+                spot_square_chunk = _3ds_chunk(LIGHT_SPOT_RECTANGLE)
+                spotlight_chunk.add_subchunk(spot_square_chunk)
+            if ob.scale.x and ob.scale.y != 0.0:
+                spot_aspect_chunk = _3ds_chunk(LIGHT_SPOT_ASPECT)
+                spot_aspect_chunk.add_variable("aspect", _3ds_float(round((ob.scale.x / ob.scale.y),4)))
+                spotlight_chunk.add_subchunk(spot_aspect_chunk)
+            if ob.data.use_nodes:
+                links = ob.data.node_tree.links
+                bptype = 'EMISSION'
+                bpmix = 'MIX', 'MIX_RGB', 'EMISSION'
+                bptex = 'TEX_IMAGE', 'TEX_ENVIRONMENT'
+                bpout = 'ADD_SHADER', 'MIX_SHADER', 'OUTPUT_LIGHT'
+                bshade = next((lk.from_node.type for lk in links if lk.from_node.type == bptype and lk.to_node.type in bpout), None)
+                bpnode = next((lk.from_node.type for lk in links if lk.from_node.type in bpmix and lk.to_node.type == bshade), bshade)
+                bitmap = next((lk.from_node.image for lk in links if lk.from_node.type in bptex and lk.to_node.type == bpnode), False)
+                if bitmap and bitmap is not None:
+                    spot_projector_chunk = _3ds_chunk(LIGHT_SPOT_PROJECTOR)
+                    spot_projector_chunk.add_variable("image", _3ds_string(sane_name(bitmap.name)))
+                    spotlight_chunk.add_subchunk(spot_projector_chunk)
+            obj_light_chunk.add_subchunk(spotlight_chunk)
+
+        # Add light to object chunk
+        object_chunk.add_subchunk(obj_light_chunk)
+
+        # Add hierachy chunks with ID from object_id dictionary
+        if use_hierarchy:
+            obj_hierarchy_chunk = _3ds_chunk(OBJECT_HIERARCHY)
+            obj_parent_chunk = _3ds_chunk(OBJECT_PARENT)
+            obj_hierarchy_chunk.add_variable("hierarchy", _3ds_ushort(object_id[ob.name]))
+            if ob.parent is not None and (ob.parent.name in object_id):
+                obj_parent_chunk = _3ds_chunk(OBJECT_PARENT)
+                obj_parent_chunk.add_variable("parent", _3ds_ushort(object_id[ob.parent.name]))
+                obj_hierarchy_chunk.add_subchunk(obj_parent_chunk)
+            object_chunk.add_subchunk(obj_hierarchy_chunk)
+
+        # Add light object and hierarchy chunks to object info
+        object_info.add_subchunk(object_chunk)
+
+        # Export light and spotlight target node
+        if use_keyframes:
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
+            if ob.data.type == 'SPOT':
+                kfdata.add_subchunk(make_target_node(ob, name_id, transmtx, position, rotation))
+
+    # Create camera object chunks
+    for ob in camera_objects:
+        object_chunk = _3ds_chunk(OBJECT)
+        camera_chunk = _3ds_chunk(OBJECT_CAMERA)
+        crange_chunk = _3ds_chunk(OBJECT_CAM_RANGES)
+        camera_distance = position[ob.name]
+        camera_target = calc_target(camera_distance, rotation[ob.name].x, rotation[ob.name].z)
+        object_chunk.add_variable("camera", _3ds_string(sane_name(ob.name)))
+        camera_chunk.add_variable("location", _3ds_point_3d(camera_distance))
+        camera_chunk.add_variable("target", _3ds_point_3d(camera_target))
+        camera_chunk.add_variable("roll", _3ds_float(round(rotation[ob.name].y, 6)))
+        camera_chunk.add_variable("lens", _3ds_float(ob.data.lens))
+        crange_chunk.add_variable("clipstart", _3ds_float(ob.data.clip_start * 0.1))
+        crange_chunk.add_variable("clipend", _3ds_float(ob.data.clip_end * 0.1))
+        camera_chunk.add_subchunk(crange_chunk)
+        object_chunk.add_subchunk(camera_chunk)
+
+        # Add hierachy chunks with ID from object_id dictionary
+        if use_hierarchy:
+            obj_hierarchy_chunk = _3ds_chunk(OBJECT_HIERARCHY)
+            obj_parent_chunk = _3ds_chunk(OBJECT_PARENT)
+            obj_hierarchy_chunk.add_variable("hierarchy", _3ds_ushort(object_id[ob.name]))
+            if ob.parent is not None and (ob.parent.name in object_id):
+                obj_parent_chunk = _3ds_chunk(OBJECT_PARENT)
+                obj_parent_chunk.add_variable("parent", _3ds_ushort(object_id[ob.parent.name]))
+                obj_hierarchy_chunk.add_subchunk(obj_parent_chunk)
+            object_chunk.add_subchunk(obj_hierarchy_chunk)
+
+        # Add light object and hierarchy chunks to object info
+        object_info.add_subchunk(object_chunk)
+
+        # Export camera and target node
+        if use_keyframes:
+            kfdata.add_subchunk(make_object_node(ob, name_id, transmtx, position, rotation, scale, use_apply_transform))
+            kfdata.add_subchunk(make_target_node(ob, name_id, transmtx, position, rotation))
+
+    # Add main object info chunk to primary chunk
+    primary.add_subchunk(object_info)
+
+    # Add main keyframe data chunk to primary chunk
+    if use_keyframes:
+        primary.add_subchunk(kfdata)
+
+    # The chunk hierarchy is completely built, now check the size
+    primary.get_size()
+
+    # Open the file for writing
+    file = open(filepath, 'wb')
+
+    # Recursively write the chunks to file
+    primary.write(file)
+
+    # Close the file
     file.close()
 
+    # Remove free objects
+    for free in free_objects:
+        bpy.data.meshes.remove(free)
 
-def load(operator, context, files=[], directory="", filepath="", constrain_size=0.0,
-         use_scene_unit=False, use_image_search=True, object_filter=None, use_keyframes=True,
-         use_apply_transform=True, global_matrix=None, use_cursor=False, use_collection=False):
+    # Clear name mapping vars, could make locals too
+    del name_unique[:]
+    name_mapping.clear()
+    free_objects.clear()
 
-    # Get the active collection
-    collection_init = context.view_layer.active_layer_collection.collection
+    # Debugging only: report the exporting time
+    context.window.cursor_set('DEFAULT')
+    print(" done in %.4f sec." % (time.time() - duration))
 
-    # Load selected file
-    if not len(files):
-        files = [Path(filepath)]
-        directory = Path(filepath).parent
+    # Debugging only: dump the chunk hierarchy
+    # primary.dump()
 
-    for file in files:
-        if use_collection:
-            # Create new collections if activated (collection name = 3ds file name)
-            collection = bpy.data.collections.new(Path(file.name).stem)
-            context.scene.collection.children.link(collection)
-            context.view_layer.active_layer_collection = context.view_layer.layer_collection.children[collection.name]
-        load_3ds(Path(directory, file.name), context, CONSTRAIN=constrain_size, UNITS=use_scene_unit,
-                 IMAGE_SEARCH=use_image_search, FILTER=object_filter, KEYFRAME=use_keyframes,
-                 APPLY_MATRIX=use_apply_transform, CONVERSE=global_matrix, CURSOR=use_cursor,)
 
-    # Retrive the initial collection as active
-    active = context.view_layer.layer_collection.children.get(collection_init.name)
-    if active is not None:
-        context.view_layer.active_layer_collection = active
+def save(operator, context, filepath="", collection="", scale_factor=1.0, use_scene_unit=False, use_selection=False,
+         object_filter=None, use_apply_transform=True, use_invisible=False, use_keyframes=True, use_hierarchy=False,
+         use_collection=False, global_matrix=None, use_cursor=False):
+
+    unit_measure = 1.0
+    if use_scene_unit:
+        unit_length = scene.unit_settings.length_unit
+        if unit_length == 'MILES':
+            unit_measure = 0.000621371
+        elif unit_length == 'KILOMETERS':
+            unit_measure = 0.001
+        elif unit_length == 'FEET':
+            unit_measure = 3.280839895
+        elif unit_length == 'INCHES':
+            unit_measure = 39.37007874
+        elif unit_length == 'CENTIMETERS':
+            unit_measure = 100
+        elif unit_length == 'MILLIMETERS':
+            unit_measure = 1000
+        elif unit_length == 'THOU':
+            unit_measure = 39370.07874
+        elif unit_length == 'MICROMETERS':
+            unit_measure = 1000000
+
+    master_scale = scale_factor * unit_measure
+
+    items = context.scene.objects
+    if use_collection:
+        items = layer.active_layer_collection.collection.all_objects
+    elif collection:
+        item_collection = bpy.data.collections.get(collection)
+        if item_collection:
+            items = item_collection.all_objects
+
+    save_3ds(context, filepath, collection, items, master_scale, global_matrix, use_selection,
+             use_apply_transform, object_filter, use_invisible, use_keyframes, use_hierarchy, use_cursor)
 
     return {'FINISHED'}
