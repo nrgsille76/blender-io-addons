@@ -11,7 +11,7 @@
 &nbsp;&nbsp; `File --> Import/Export --> Autodesk 3DS (.3ds)`  
 
 **Version**  
-&nbsp;&nbsp; 2.7.6  
+&nbsp;&nbsp; 2.8.0  
 
 **Authors**  
 &nbsp;&nbsp; Bob Holcomb, Campbell Barton, Sebastian Schrand  
