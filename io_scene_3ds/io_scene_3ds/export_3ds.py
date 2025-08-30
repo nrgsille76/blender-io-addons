@@ -14,6 +14,7 @@ import math
 import struct
 import mathutils
 import bpy_extras
+from pathlib import Path
 from bpy_extras import node_shader_utils
 
 ###################
@@ -1632,6 +1633,8 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
              use_keyframes=True, use_hierarchy=False, use_cursor=False):
     """Save the Blender scene to a 3ds file."""
 
+    print("exporting 3DS: %r..." % (Path(filepath).name), end="")
+
     # Time the export
     duration = time.time()
     context.window.cursor_set('WAIT')
@@ -1640,7 +1643,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
     depsgraph = context.evaluated_depsgraph_get()
     world = scene.world
 
-    mtx_scale = mathutils.Matrix.Scale((scale_factor),4)
+    mtx_scale = mathutils.Matrix.Scale((master_scale),4)
 
     if collection and not items:
         item_collection = bpy.data.collections.get(collection)
@@ -1689,14 +1692,13 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
         object_filter.update(OTHERS)
         EMPTYS.update(DUMMYS)
 
-    if use_selection and use_invisible:
-        objects = [ob for ob in items if ob.type in object_filter and ob.hide_get(view_layer=layer) and ob.select_get(view_layer=layer)]
-    elif use_selection and not use_invisible:
+    if use_selection and not use_invisible:
         objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer) and ob.select_get(view_layer=layer)]
+    elif use_selection and use_invisible:
+        objects = [ob for ob in items if ob.type in object_filter and ob.select_get(view_layer=layer) or ob.hide_get(view_layer=layer) or
+                   not ob.visible_get(view_layer=layer) or ob.users_collection and ob.users_collection[0].hide_viewport]
     elif not use_selection and not use_invisible:
         objects = [ob for ob in items if ob.type in object_filter and ob.visible_get(view_layer=layer)]
-    elif use_invisible and not use_selection:
-        objects = [ob for ob in items if ob.type in object_filter and ob.hide_get(view_layer=layer)]
     else:
         objects = [ob for ob in items if ob.type in object_filter]
 
@@ -2118,7 +2120,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
 
     # Debugging only: report the exporting time
     context.window.cursor_set('DEFAULT')
-    print("3ds export time: %.2f" % (time.time() - duration))
+    print(" done in %.4f sec." % (time.time() - duration))
 
     # Debugging only: dump the chunk hierarchy
     # primary.dump()
@@ -2148,7 +2150,7 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
         elif unit_length == 'MICROMETERS':
             unit_measure = 1000000
 
-    masterscale = scale_factor * unit_measure
+    master_scale = scale_factor * unit_measure
 
     items = context.scene.objects
     if use_collection:
@@ -2158,7 +2160,7 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
         if item_collection:
             items = item_collection.all_objects
 
-    save_3ds(context, filepath, collection, items, masterscale, global_matrix, use_selection,
+    save_3ds(context, filepath, collection, items, master_scale, global_matrix, use_selection,
              use_apply_transform, object_filter, use_invisible, use_keyframes, use_hierarchy, use_cursor)
 
     return {'FINISHED'}
