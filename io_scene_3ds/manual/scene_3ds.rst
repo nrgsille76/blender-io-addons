@@ -6,7 +6,7 @@ Autodesk 3DS
 
    :Category: Import-Export
    :Menu: :menuselection:`File --> Import/Export --> Autodesk 3DS (.3ds)`
-   :Version: 2.7.2
+   :Version: 2.8.8
    :Blender: 4.2
    :Authors: Bob Holcomb, Campbell Barton, Sebastian Schrand
    :Maintainer: Sebastian Sille (NRGSille)
@@ -88,8 +88,11 @@ transformations in 3ds are part of animations and may not be correctly imported 
 Include
 ^^^^^^^
 
+Invisible
+   When checked, also invisible objects are exported. Otherwise export visible objects only.
+
 Selection
-   When checked, only selected objects are exported. Otherwise export all objects in the scene.
+   When checked, only selected objects are exported. Otherwise export all visible objects in the scene.
 
 Object Filter
    The kind of objects to be exported, checked object types will be exported and unchecked not.
@@ -179,9 +182,16 @@ The material mappings are defined as following:
 - 3ds Opacity Map <-> blender Alpha Texture
 - 3ds Self Illumination Map <-> blender Emission Texture
 - 3ds Bump Map <-> blender Normal Map (tangent space)
-- 3ds Tex2 Map <-> blender Color Texture (connect to mix-shader)
+- 3ds Tex2 Map <-> blender Color Texture (connect to color-mixer)
+- 3ds Diffuse Mask <-> blender Color Texture Mask (color-mix factor)
+- 3ds Opacity Mask <-> blender Transmission Texture
+- 3ds Bump Mask <-> blender NormalMap Strength Texture
+- 3ds Shininess Mask <-> blender Sheen Weight Texture
+- 3ds Specular Mask <-> blender Specular Level Texture
+- 3ds Self Illumination Mask <-> blender Emission Strength Texture
+- 3ds Reflection Mask <-> blender Coat Weight Texture
 
-.. figure:: /images/addons_io_3ds_shader-nodes.jpg
+.. figure:: https://raw.githubusercontent.com/nrgsille76/blender-io-addons/refs/heads/main/io_scene_3ds/manual/images/addons_io_3ds_material-nodes.jpg
 
    An example of a 3ds file with all image maps imported.
 
@@ -228,7 +238,7 @@ has to be connected to a valid input:
 - 3ds Layered Fog <-> blender Volume Scatter
 - 3ds Distance Cue <-> blender MapRange Node
 
-.. figure:: /images/addons_io_3ds_world-nodes.jpg
+.. figure:: https://raw.githubusercontent.com/nrgsille76/blender-io-addons/refs/heads/main/io_scene_3ds/manual/images/addons_io_3ds_world-nodes.jpg
 
    An example of a 3ds file with all world nodes imported.
 
@@ -246,7 +256,7 @@ The x/y scale of a spotlight will be exported in an aspect ratio chunk,
 the importer can calculate it back to x/y scale.
 The target data is calculated to Z and X axis angle for pan and tilt, Y is used for the roll angle.
 
-.. figure:: /images/addons_io_3ds_light-nodes.jpg
+.. figure:: https://raw.githubusercontent.com/nrgsille76/blender-io-addons/refs/heads/main/io_scene_3ds/manual/images/addons_io_3ds_light-nodes.jpg
 
    An example of a 3ds file with all light nodes imported.
 
