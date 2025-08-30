@@ -5,7 +5,7 @@
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
-__version__ = "2.7.6"
+__version__ = "2.8.0"
 __date__ = "24 Sep 2020"
 
 
@@ -26,6 +26,10 @@ from bpy.props import (
     StringProperty,
     CollectionProperty,
 )
+from bpy.types import (
+    Operator,
+    FileHandler,
+)
 
 if "bpy" in locals():
     import importlib
@@ -37,7 +41,7 @@ if "bpy" in locals():
 bl_info = {
     "name": "Autodesk 3D Studio (.3ds)",
     "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
-    "version": (2, 7, 6),
+    "version": (2, 8, 0),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "3DS Import/Export meshes, UVs, materials, textures, "
@@ -49,7 +53,7 @@ bl_info = {
 }
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
-class Import3DS(bpy.types.Operator, ImportHelper):
+class Import3DS(Operator, ImportHelper):
     """Import from 3DS file format (.3ds)"""
     bl_idname = "import_scene.3ds"
     bl_label = 'Import 3DS'
@@ -171,7 +175,7 @@ def import_transform(layout, operator):
 
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
-class Export3DS(bpy.types.Operator, ExportHelper):
+class Export3DS(Operator, ExportHelper):
     """Export to 3DS file format (.3ds)"""
     bl_idname = "export_scene.3ds"
     bl_label = 'Export 3DS'
@@ -311,7 +315,7 @@ def export_transform(layout, operator):
         body.prop(operator, "axis_up")
 
 
-class IO_FH_3dsMax(bpy.types.FileHandler):
+class IO_FH_3dsMax(FileHandler):
     bl_idname = "IO_FH_3dsMax"
     bl_label = "3DS"
     bl_import_operator = "import_scene.3ds"
