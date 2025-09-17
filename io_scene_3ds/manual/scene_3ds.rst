@@ -6,7 +6,7 @@ Autodesk 3DS
 
    :Category: Import-Export
    :Menu: :menuselection:`File --> Import/Export --> Autodesk 3DS (.3ds)`
-   :Version: 2.8.8
+   :Version: 2.8.4
    :Blender: 4.2
    :Authors: Bob Holcomb, Campbell Barton, Sebastian Schrand
    :Maintainer: Sebastian Sille (NRGSille)
@@ -37,6 +37,10 @@ Include
 Image Search
    This enables a recursive file search if an image file can't be found.
 
+Collection
+   Creates a new collection for the imported file. This is useful for importing multiple objects at once
+   to get a better overview in the outliner.
+
 Object Filter
    The kind of objects to be imported, checked object types will be imported and unchecked not.
    Hold shift while selecting to check multiple object types.
@@ -45,10 +49,6 @@ Animation
    Reads the keyframe tracks from a 3ds file and transforms the objects to the data which was found.
    Usually only one frame is found in static scenes, it will be imported to the timeline.
    If the 3ds scene is animated, the complete animation will be imported to the timeline.
-
-Collection
-   Creates a new collection for the imported file. This is useful for importing multiple objects at once
-   to get a better overview in the outliner.
 
 Cursor Origin
    Reads the 3D cursor location chunk if one is found. Almost all valid 3ds files including this chunk,
@@ -88,11 +88,17 @@ transformations in 3ds are part of animations and may not be correctly imported 
 Include
 ^^^^^^^
 
+Images
+    This saves all texture images to the same filepath as the .3ds file.
+
 Invisible
    When checked, also invisible objects are exported. Otherwise export visible objects only.
 
 Selection
    When checked, only selected objects are exported. Otherwise export all visible objects in the scene.
+
+Collection
+   Instead of exporting the complete scene, only the active collection will be exported.
 
 Object Filter
    The kind of objects to be exported, checked object types will be exported and unchecked not.
@@ -106,9 +112,6 @@ Animation
    Writes the keyframe section of a 3ds file and exports the animation if an action was found.
    The animation can be imported the same way, un-check if any importer crashes,
    not every application can handle the keyframe section.
-
-Collection
-   Instead of exporting the complete scene, only the active collection will be exported.
 
 Cursor Origin
    Saves the current 3D cursor location of the scene to a chunk, the importer can read the location,
@@ -276,3 +279,4 @@ The importer can read the keyframes, they will be added to the timeline.
 Most animations will play, but the transformations may not be correct,
 some axes or rotations can be inverted. It depends on how it was exported from other applications.
 The exporter can write the keyframes of the timeline to an animated 3ds file.
+
