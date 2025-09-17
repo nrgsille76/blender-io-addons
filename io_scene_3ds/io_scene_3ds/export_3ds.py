@@ -527,7 +527,7 @@ class _3ds_chunk(object):
 #############
 
 def get_material_image(material):
-    """ Get images from paint slots."""
+    """Get images from paint slots."""
     if material:
         pt = material.paint_active_slot
         tex = material.texture_paint_images
@@ -538,7 +538,7 @@ def get_material_image(material):
 
 
 def get_uv_image(ma):
-    """ Get image from material wrapper."""
+    """Get image from material wrapper."""
     if ma and ma.use_nodes:
         mat_wrap = node_shader_utils.PrincipledBSDFWrapper(ma)
         mat_tex = mat_wrap.base_color_texture
@@ -546,6 +546,15 @@ def get_uv_image(ma):
             return mat_tex.image
     else:
         return get_material_image(ma)
+
+
+def save_image(img, path):
+    """Save image to destination filepath."""
+    if img and path is not None:
+        img_name = Path(img.filepath).name
+        file_path = os.path.join(path, img_name)
+        if not os.path.isfile(file_path):
+            img.save(filepath=file_path)
 
 
 def make_material_subchunk(chunk_id, color):
@@ -575,7 +584,6 @@ def make_percent_subchunk(chunk_id, percent):
     return pct_sub
 
 
-
 def make_mapping_chunks(tex_chunk, scale, translation, rotation):
     """Make Material Map mapping chunks."""
 
@@ -600,7 +608,7 @@ def make_mapping_chunks(tex_chunk, scale, translation, rotation):
     tex_chunk.add_subchunk(tex_map_angle)
 
 
-def make_texture_chunk(chunk_id, teximages, texmixer, pct, mapnode=None):
+def make_texture_chunk(chunk_id, teximages, path=None, mapnode=None, pct=1, texmixer=False):
     """Make Material Map texture chunk."""
     # Add texture percentage value (100 = 1.0)
     mat_sub = make_percent_subchunk(chunk_id, pct)
@@ -638,10 +646,13 @@ def make_texture_chunk(chunk_id, teximages, texmixer, pct, mapnode=None):
             mat_sub.add_subchunk(tint1)
             mat_sub.add_subchunk(tint2)
 
-    for tex in teximages:
-        extend = tex.extension
-        add_image(tex.image, extend)
-        has_entry = True
+    if bool(teximages):
+        for tex in teximages:
+            if tex.image is not None:
+                extend = tex.extension
+                save_image(tex.image, path)
+                add_image(tex.image, extend)
+                has_entry = True
 
     return mat_sub if has_entry else None
 
@@ -718,7 +729,7 @@ def make_material_texture_chunk(chunk_id, texslots, pct):
     return mat_sub if has_entry else None
 
 
-def make_material_chunk(material, image):
+def make_material_chunk(material, image, path):
     """Make a material chunk out of a blender material.
     Shading method is required for 3ds max, 0 for wireframe.
     0x1 for flat, 0x2 for gouraud, 0x3 for phong and 0x4 for metal."""
@@ -772,12 +783,13 @@ def make_material_chunk(material, image):
             primary_map = wrap.base_color_texture.node_mapping
             matmap = make_material_texture_chunk(MAT_DIFFUSEMAP, color, c_pct)
             if matmap:
+                save_image(image, path)
                 material_chunk.add_subchunk(matmap)
                 primary_tex = True
 
         if mxtex and not primary_tex:
             primary_map = next((lk.from_node for lk in mtlks if lk.from_node.type == 'MAPPING' and lk.to_node.name == mxtex[0].name), None)
-            material_chunk.add_subchunk(make_texture_chunk(MAT_DIFFUSEMAP, mxtex, mixer, mxpct, primary_map))
+            material_chunk.add_subchunk(make_texture_chunk(MAT_DIFFUSEMAP, mxtex, path, primary_map, mxpct, mixer))
             primary_tex = True
 
         if wrap.specular_tint_texture:
@@ -785,6 +797,7 @@ def make_material_chunk(material, image):
             s_pct = material.specular_intensity
             matmap = make_material_texture_chunk(MAT_SPECMAP, spec, s_pct)
             if matmap:
+                save_image(wrap.specular_tint_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.alpha_texture:
@@ -792,6 +805,7 @@ def make_material_chunk(material, image):
             a_pct = material.diffuse_color[3]
             matmap = make_material_texture_chunk(MAT_OPACMAP, alpha, a_pct)
             if matmap:
+                save_image(wrap.alpha_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.metallic_texture:
@@ -799,6 +813,7 @@ def make_material_chunk(material, image):
             m_pct = material.metallic
             matmap = make_material_texture_chunk(MAT_REFLMAP, metallic, m_pct)
             if matmap:
+                save_image(wrap.metallic_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.normalmap_texture:
@@ -807,6 +822,7 @@ def make_material_chunk(material, image):
             primary_map = wrap.normalmap_texture.node_mapping
             matmap = make_material_texture_chunk(MAT_BUMPMAP, normal, b_pct)
             if matmap:
+                save_image(wrap.normalmap_texture.image, path)
                 material_chunk.add_subchunk(matmap)
                 material_chunk.add_subchunk(make_percent_subchunk(MAT_BUMP_PERCENT, b_pct))
 
@@ -815,6 +831,7 @@ def make_material_chunk(material, image):
             r_pct = 1 - material.roughness
             matmap = make_material_texture_chunk(MAT_SHINMAP, roughness, r_pct)
             if matmap:
+                save_image(wrap.roughness_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.emission_color_texture:
@@ -822,6 +839,7 @@ def make_material_chunk(material, image):
             e_pct = wrap.emission_strength
             matmap = make_material_texture_chunk(MAT_SELFIMAP, emission, e_pct)
             if matmap:
+                save_image(wrap.emission_color_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.transmission_texture:
@@ -829,18 +847,21 @@ def make_material_chunk(material, image):
             t_pct = wrap.transmission
             matmap = make_material_texture_chunk(MAT_OPACMASK, transmission, t_pct)
             if matmap:
+                save_image(wrap.transmission_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.specular_texture:
             specular = [wrap.specular_texture]
             matmap = make_material_texture_chunk(MAT_SPECMASK, specular, 1)
             if matmap:
+                save_image(wrap.specular_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         if wrap.emission_strength_texture:
             luminous = [wrap.emission_strength_texture]
             matmap = make_material_texture_chunk(MAT_SELFIMASK, luminous, 1)
             if matmap:
+                save_image(wrap.emission_strength_texture.image, path)
                 material_chunk.add_subchunk(matmap)
 
         matmap = diffmask = normalmask = shinmask = reflmask = None
@@ -853,15 +874,15 @@ def make_material_chunk(material, image):
             sheenmask = link.from_node if link.from_node.type == tximg and link.to_socket.identifier == 'Sheen Weight' else None
             coatmask = link.from_node if link.from_node.type == tximg and link.to_socket.identifier == 'Coat Weight' else None
             if secondary:
-                matmap = make_texture_chunk(MAT_TEX2MAP, [secondary], mixer, 1 - mxpct, primary_map)
+                matmap = make_texture_chunk(MAT_TEX2MAP, [secondary], path, primary_map, 1 - mxpct, mixer)
             if texmask:
-                diffmask = make_texture_chunk(MAT_TEXMASK, [texmask], False, mxpct, primary_map)
+                diffmask = make_texture_chunk(MAT_TEXMASK, [texmask], path, primary_map, mxpct)
             if bumpmask:
-                normalmask = make_texture_chunk(MAT_BUMPMASK, [bumpmask], False, 1, primary_map)
+                normalmask = make_texture_chunk(MAT_BUMPMASK, [bumpmask], path, primary_map)
             if sheenmask:
-                shinmask = make_texture_chunk(MAT_SHINMASK, [sheenmask], False, 1)
+                shinmask = make_texture_chunk(MAT_SHINMASK, [sheenmask], path)
             if coatmask:
-                reflmask = make_texture_chunk(MAT_REFLMASK, [coatmask], False, 1)
+                reflmask = make_texture_chunk(MAT_REFLMASK, [coatmask], path)
         if primary_tex and matmap:
             material_chunk.add_subchunk(matmap)
         if diffmask:
@@ -887,6 +908,7 @@ def make_material_chunk(material, image):
         slots = [get_material_image(material)]  # Can be None
 
         if image:
+            save_image(image, path)
             material_chunk.add_subchunk(make_texture_chunk(MAT_DIFFUSEMAP, slots))
 
     return material_chunk
@@ -1630,10 +1652,11 @@ def make_ambient_node(world):
 
 def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, global_matrix=None,
              use_selection=False, use_apply_transform=True, object_filter=None, use_invisible=False,
-             use_keyframes=True, use_hierarchy=False, use_cursor=False):
+             use_images=False, use_keyframes=True, use_hierarchy=False, use_cursor=False):
     """Save the Blender scene to a 3ds file."""
 
     print("exporting 3DS: %r..." % (Path(filepath).name), end="")
+    image_path = Path(filepath).parent if use_images else None
 
     # Time the export
     duration = time.time()
@@ -1643,7 +1666,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
     depsgraph = context.evaluated_depsgraph_get()
     world = scene.world
 
-    mtx_scale = mathutils.Matrix.Scale((master_scale),4)
+    mtx_scale = mathutils.Matrix.Scale((scale_factor),4)
 
     if collection and not items:
         item_collection = bpy.data.collections.get(collection)
@@ -1763,7 +1786,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
 
     # Make MATERIAL chunks for all materials used in the meshes
     for ma_image in materialDict.values():
-        object_info.add_subchunk(make_material_chunk(ma_image[0], ma_image[1]))
+        object_info.add_subchunk(make_material_chunk(ma_image[0], ma_image[1], image_path))
 
     # Add MASTERSCALE element
     mscale = _3ds_chunk(MASTERSCALE)
@@ -1802,6 +1825,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
             background_color_chunk.add_variable("color", _3ds_float_color(bg_color))
             background_chunk.add_subchunk(background_color_chunk)
             if bg_image and bg_image is not None:
+                save_image(bg_image, image_path)
                 background_image = _3ds_chunk(BITMAP)
                 background_flag = _3ds_chunk(USE_BITMAP)
                 background_image.add_variable("image", _3ds_string(sane_name(bg_image.name)))
@@ -2026,6 +2050,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
                 bpnode = next((lk.from_node.type for lk in links if lk.from_node.type in bpmix and lk.to_node.type == bshade), bshade)
                 bitmap = next((lk.from_node.image for lk in links if lk.from_node.type in bptex and lk.to_node.type == bpnode), False)
                 if bitmap and bitmap is not None:
+                    save_image(bitmap, image_path)
                     spot_projector_chunk = _3ds_chunk(LIGHT_SPOT_PROJECTOR)
                     spot_projector_chunk.add_variable("image", _3ds_string(sane_name(bitmap.name)))
                     spotlight_chunk.add_subchunk(spot_projector_chunk)
@@ -2126,9 +2151,9 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
     # primary.dump()
 
 
-def save(operator, context, filepath="", collection="", scale_factor=1.0, use_scene_unit=False, use_selection=False,
-         object_filter=None, use_apply_transform=True, use_invisible=False, use_keyframes=True, use_hierarchy=False,
-         use_collection=False, global_matrix=None, use_cursor=False):
+def save(operator, context, filepath="", collection="", scale_factor=1.0, use_scene_unit=False, use_images=True,
+         use_selection=False, object_filter=None, use_apply_transform=True, use_invisible=False, use_keyframes=True,
+         use_hierarchy=False, use_collection=False, global_matrix=None, use_cursor=False):
 
     unit_measure = 1.0
     if use_scene_unit:
@@ -2150,17 +2175,18 @@ def save(operator, context, filepath="", collection="", scale_factor=1.0, use_sc
         elif unit_length == 'MICROMETERS':
             unit_measure = 1000000
 
+    items = context.scene.objects
+    viewlayer = context.view_layer
     master_scale = scale_factor * unit_measure
 
-    items = context.scene.objects
     if use_collection:
-        items = layer.active_layer_collection.collection.all_objects
+        items = viewlayer.active_layer_collection.collection.all_objects
     elif collection:
         item_collection = bpy.data.collections.get(collection)
         if item_collection:
             items = item_collection.all_objects
 
-    save_3ds(context, filepath, collection, items, master_scale, global_matrix, use_selection,
-             use_apply_transform, object_filter, use_invisible, use_keyframes, use_hierarchy, use_cursor)
+    save_3ds(context, filepath, collection, items, master_scale, global_matrix, use_selection, use_apply_transform,
+             object_filter, use_invisible, use_images, use_keyframes, use_hierarchy, use_cursor)
 
     return {'FINISHED'}
