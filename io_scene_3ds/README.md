@@ -11,7 +11,7 @@
 &nbsp;&nbsp; `File --> Import/Export --> Autodesk 3DS (.3ds)`  
 
 **Version**  
-&nbsp;&nbsp; 2.8.0  
+&nbsp;&nbsp; 2.8.4  
 
 **Authors**  
 &nbsp;&nbsp; Bob Holcomb, Campbell Barton, Sebastian Schrand  
@@ -29,7 +29,7 @@ from .io_scene_3ds.export_3ds import save_3ds
 
 save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, global_matrix=None,
          use_selection=False, use_apply_transform=True, object_filter=None, use_invisible=False,
-         use_keyframes=True, use_hierarchy=False, use_cursor=False)
+         use_images=False, use_keyframes=True, use_hierarchy=False, use_cursor=False)
 ```
 PARAMETERS:
 + `filepath` (string, (optional, never None)) – File Path, Filepath used for exporting the file
@@ -42,6 +42,7 @@ PARAMETERS:
 + `object_filter` (enum in [`WORLD`, `MESH`, `LIGHT`, `CAMERA`, `EMPTY`, `OTHER`], (optional)) - Object types to export
   - if `object filter` is `None` all types are taken, except of `WORLD`
 + `use_invisible` (boolean (optional)) - Export invisible objects
++ `use_images` (boolean (optional)) - Export all images used in scene
 + `use_keyframes` (boolean (optional)) - Export animation keyframes
 + `use_hierarchy` (boolean (optional)) - Export object hierarchy (use this option to keep hierarchy without keyframes)
 + `use_cursor` (boolean (optional)) - Export 3D cursor position
