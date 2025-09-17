@@ -5,7 +5,7 @@
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
-__version__ = "2.8.0"
+__version__ = "2.8.4"
 __date__ = "24 Sep 2020"
 
 
@@ -41,7 +41,7 @@ if "bpy" in locals():
 bl_info = {
     "name": "Autodesk 3D Studio (.3ds)",
     "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
-    "version": (2, 8, 0),
+    "version": (2, 8, 4),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "3DS Import/Export meshes, UVs, materials, textures, "
@@ -201,6 +201,11 @@ class Export3DS(Operator, ExportHelper):
         description="Take the scene unit length settings into account",
         default=False,
     )
+    use_images: BoolProperty(
+        name="Images",
+        description="Export all associated images from the scene",
+        default=True,
+    )
     use_selection: BoolProperty(
         name="Selection",
         description="Export selected objects only",
@@ -277,10 +282,12 @@ def export_include(layout, operator, browser):
     header, body = layout.panel("MAX3DS_export_include", default_closed=False)
     header.label(text="Include")
     if body:
-        if browser:
-            line = body.row(align=True)
-            line.prop(operator, "use_selection")
-            line.label(text="", icon='RESTRICT_SELECT_OFF' if operator.use_selection else 'RESTRICT_SELECT_ON')
+        line = body.row(align=True)
+        line.prop(operator, "use_images")
+        line.label(text="", icon='OUTLINER_OB_IMAGE' if operator.use_images else 'IMAGE_DATA')
+        line = body.row(align=True)
+        line.prop(operator, "use_selection")
+        line.label(text="", icon='RESTRICT_SELECT_OFF' if operator.use_selection else 'RESTRICT_SELECT_ON')
         line = body.row(align=True)
         line.prop(operator, "use_invisible")
         line.label(text="", icon='HIDE_OFF' if operator.use_invisible else 'HIDE_ON')
