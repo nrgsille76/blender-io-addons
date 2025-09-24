@@ -7,7 +7,7 @@ aggressive = 2
 
 [project]
 name = "io_scene_3ds"
-version = "2.8.4"
+version = "2.8.5"
 authors = [{ name="Sebastian Sille", email="nrgsille@gmail.com" }]
 description = "Autodesk 3D Studio Blender Extension"
 readme = "README.md"
@@ -24,7 +24,7 @@ Issues = "https://github.com/nrgsille76/blender-io-addons/issues"
 
 [tool.poetry]
 name = "io_scene_3ds"
-version = "2.8.4"
+version = "2.8.5"
 description = "Autodesk 3D Studio Blender Extension"
 license = "GPL-2.0-or-later"
 authors = ["Sebastian Schrand", "Campbell Barton", "Bob Holcomb"]
