@@ -5,7 +5,7 @@
 
 
 __author__ = "Sebastian Sille <nrgsille@gmail.com>"
-__version__ = "2.8.4"
+__version__ = "2.8.5"
 __date__ = "24 Sep 2020"
 
 
@@ -41,7 +41,7 @@ if "bpy" in locals():
 bl_info = {
     "name": "Autodesk 3D Studio (.3ds)",
     "author": "Bob Holcomb, Campbell Barton, Sebastian Schrand",
-    "version": (2, 8, 4),
+    "version": (2, 8, 5),
     "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "3DS Import/Export meshes, UVs, materials, textures, "
