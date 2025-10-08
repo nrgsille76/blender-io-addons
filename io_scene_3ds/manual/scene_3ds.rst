@@ -6,7 +6,7 @@ Autodesk 3DS
 
    :Category: Import-Export
    :Menu: :menuselection:`File --> Import/Export --> Autodesk 3DS (.3ds)`
-   :Version: 2.8.5
+   :Version: 2.8.6
    :Blender: 4.2
    :Authors: Bob Holcomb, Campbell Barton, Sebastian Schrand
    :Maintainer: Sebastian Sille (NRGSille)
@@ -279,5 +279,6 @@ The importer can read the keyframes, they will be added to the timeline.
 Most animations will play, but the transformations may not be correct,
 some axes or rotations can be inverted. It depends on how it was exported from other applications.
 The exporter can write the keyframes of the timeline to an animated 3ds file.
+
 
 
