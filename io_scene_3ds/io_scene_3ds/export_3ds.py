@@ -739,7 +739,6 @@ def make_material_chunk(material, image, path):
     shading = _3ds_chunk(MATSHADING)
     name_str = material.name if material else "None"
     name.add_variable("name", _3ds_string(sane_name(name_str)))
-    use_nodes = material.use_nodes if hasattr(material, "use_nodes") else bool(material.node_tree.nodes.get("Material Output"))
     material_chunk.add_subchunk(name)
 
     if not material:
@@ -751,7 +750,7 @@ def make_material_chunk(material, image, path):
         material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, 0.5))
         material_chunk.add_subchunk(shading)
 
-    elif material and use_nodes:
+    elif material and material.node_tree:
         wrap = node_shader_utils.PrincipledBSDFWrapper(material)
         shading.add_variable("shading", _3ds_ushort(3))  # Phong shading
         material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, wrap.emission_color[:3]))
@@ -1577,7 +1576,7 @@ def make_ambient_node(world):
     amb_node_header_chunk.add_variable("parent", _3ds_ushort(ROOT_OBJECT))
     amb_node.add_subchunk(amb_node_header_chunk)
 
-    if world.node_tree.animation_data.action:
+    if world.node_tree and world.node_tree.animation_data.action:
         ambioutput = 'EMISSION' ,'MIX_SHADER', 'WORLD_OUTPUT'
         action = world.node_tree.animation_data.action
         links = world.node_tree.links
@@ -1811,7 +1810,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
         object_info.add_subchunk(ambient_chunk)
 
         # Add BACKGROUND and BITMAP
-        if world.node_tree.nodes.get("Background") is not None:
+        if world.node_tree and world.node_tree.nodes.get("Background"):
             bgtype = 'BACKGROUND'
             ntree = world.node_tree.links
             background_color_chunk = _3ds_chunk(RGB)
@@ -1974,7 +1973,7 @@ def save_3ds(context, filepath="", collection="", items=[], scale_factor=1.0, gl
         if object_chunk.validate():
             object_info.add_subchunk(object_chunk)
         else:
-            operator.report({'WARNING'}, "Object %r can't be written into a 3DS file" % ob.name)
+            print("Object %r can't be written into a 3DS file" % ob.name)
 
         # Export object node
         if use_keyframes and not use_hierarchy:
